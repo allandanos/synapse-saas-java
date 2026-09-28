@@ -3,7 +3,9 @@ package dev.synapse.core.db;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +14,7 @@ import org.springframework.stereotype.Component;
 public class Json {
 
     private static final TypeReference<LinkedHashMap<String, Object>> MAP = new TypeReference<>() {};
+    private static final TypeReference<ArrayList<Map<String, Object>>> LIST = new TypeReference<>() {};
 
     private final ObjectMapper mapper;
 
@@ -24,6 +27,18 @@ public class Json {
             return mapper.writeValueAsString(value);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Value is not JSON-serialisable", e);
+        }
+    }
+
+    /** A {@code jsonb} array of objects (e.g. {@code subscriptions.pending_adjustments}). */
+    public List<Map<String, Object>> readList(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return mapper.readValue(json, LIST);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Stored jsonb is not an array of objects", e);
         }
     }
 

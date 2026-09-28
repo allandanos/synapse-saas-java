@@ -10,6 +10,8 @@ import dev.synapse.core.errors.ConflictError;
 import dev.synapse.core.errors.InviteNotFoundError;
 import dev.synapse.core.errors.NotFoundError;
 import dev.synapse.core.errors.SlugUnavailableError;
+import dev.synapse.core.errors.UsageLimitExceededError;
+import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.core.ids.Ids;
 import dev.synapse.core.ids.Secrets;
 import dev.synapse.core.outbox.Events;
@@ -17,11 +19,17 @@ import dev.synapse.core.outbox.OutboxWriter;
 import dev.synapse.core.pagination.PageEnvelope;
 import dev.synapse.core.security.Principal;
 import dev.synapse.core.validation.Emails;
+import dev.synapse.entitlements.EntitlementService;
 import dev.synapse.identity.User;
 import dev.synapse.identity.UserRepository;
 import dev.synapse.identity.dto.InviteAcceptResponse;
+import dev.synapse.subscriptions.Plan;
+import dev.synapse.subscriptions.PlanRepository;
+import dev.synapse.subscriptions.SubscriptionService;
 import dev.synapse.tenancy.dto.MembershipRead;
 import dev.synapse.tenancy.dto.OrganizationRead;
+import dev.synapse.usage.UsageService;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +43,9 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Organization lifecycle + membership management (reference: {@code tenancy/service.py}).
  * Every mutation writes audit + outbox in the same transaction. Creating an org
- * bootstraps the owner membership with the {@code owner} system role.
+ * bootstraps the owner membership with the {@code owner} system role and a
+ * default-plan subscription; the {@code users} seat gauge follows every
+ * membership change and is enforced on invites.
  */
 @Service
 public class OrganizationService {
@@ -51,9 +61,16 @@ public class OrganizationService {
     private final OutboxWriter outbox;
     private final RlsGucs rls;
     private final Json json;
+    private final SubscriptionService subscriptions;
+    private final PlanRepository plans;
+    private final UsageService usage;
+    private final EntitlementService entitlements;
+    private final SynapseProperties props;
 
     public OrganizationService(OrganizationRepository orgs, MembershipRepository members, UserRepository users,
-                               AuthorizationService authz, AuditService audit, OutboxWriter outbox, RlsGucs rls, Json json) {
+                               AuthorizationService authz, AuditService audit, OutboxWriter outbox, RlsGucs rls, Json json,
+                               SubscriptionService subscriptions, PlanRepository plans, UsageService usage, EntitlementService entitlements,
+                               SynapseProperties props) {
         this.orgs = orgs;
         this.members = members;
         this.users = users;
@@ -62,6 +79,11 @@ public class OrganizationService {
         this.outbox = outbox;
         this.rls = rls;
         this.json = json;
+        this.subscriptions = subscriptions;
+        this.plans = plans;
+        this.usage = usage;
+        this.entitlements = entitlements;
+        this.props = props;
     }
 
     // ── Organizations ────────────────────────────────────────────────────────────
@@ -72,7 +94,7 @@ public class OrganizationService {
         return PageEnvelope.of(orgsOfUser, orgsOfUser.size(), 100, 0);
     }
 
-    /** Create org + owner membership + owner role. (The default-plan subscription lands with milestone 3.) */
+    /** Create org + owner membership + owner role + default subscription. */
     @Transactional
     public OrganizationRead createOrganization(String name, String slug, UUID ownerUserId) {
         String desired = slug != null ? slug : Ids.slugify(name);
@@ -86,11 +108,16 @@ public class OrganizationService {
         rls.bindTenant(org.id());
 
         Membership membership = members.insert(org.id(), ownerUserId, null, "active", Instant.now());
+        syncSeatGauge(org.id());
         authz.attachRole(membership.id(), org.id(), List.of(), PermissionCatalog.SYSTEM_ROLE_OWNER);
 
         audit.log(Events.ORG_CREATED, org.id(), null, "organization", org.id(), Map.of("name", name, "slug", finalSlug));
         outbox.append(Events.ORG_CREATED, "organization", org.id(), org.id(),
             Map.of("name", name, "slug", finalSlug, "owner_user_id", ownerUserId.toString()));
+
+        // Default-plan subscription so entitlements resolve immediately
+        bootstrapSubscription(org);
+
         log.info("org_created org_id={} slug={}", org.id(), finalSlug);
         return OrganizationRead.from(org);
     }
@@ -147,7 +174,11 @@ public class OrganizationService {
         return PageEnvelope.of(page, total, limit, offset);
     }
 
-    /** Invite by email. The token never enters the HTTP response: it rides the internal outbox only. */
+    /**
+     * Invite by email. The token never enters the HTTP response: it rides the
+     * internal outbox only. The {@code users} seat limit (a gauge: active members
+     * + pending invites) is enforced inside the same transaction as the insert.
+     */
     @Transactional
     public MembershipRead inviteMember(UUID organizationId, String rawEmail, List<String> roleKeys) {
         String email = Emails.normalize(rawEmail);
@@ -157,6 +188,13 @@ public class OrganizationService {
             throw new ConflictError("This email is already invited to (or a member of) the organization",
                 Map.of("email", email, "membership_status", existing.status()));
         });
+        Long seatLimit = entitlements.effectiveForOrg(organizationId).limitValue(UsageService.SEATS_METRIC);
+        long active = members.countByStatus(organizationId, "active");
+        long pending = members.countByStatus(organizationId, "invited");
+        if (seatLimit != null && active + pending + 1 > seatLimit) {
+            throw new UsageLimitExceededError("Seat limit reached for the current plan",
+                UsageService.limitExtras(UsageService.SEATS_METRIC, seatLimit, active + pending));
+        }
         Membership membership = members.insert(organizationId, null, email, "invited", null);
         List<String> keys = roleKeys.isEmpty() ? List.of("member") : roleKeys;
         List<String> permissionKeys = List.of();
@@ -173,6 +211,7 @@ public class OrganizationService {
         // Internal event (email only): carries the token; never fans out. The mail names the org.
         outbox.append(Events.MEMBER_INVITE_EMAIL, "membership", membership.id(), organizationId,
             Map.of("email", email, "invite_token", token, "org_name", org.name()));
+        syncSeatGauge(organizationId);
         return MembershipRead.from(members.findView(membership.id()).orElseThrow());
     }
 
@@ -191,6 +230,9 @@ public class OrganizationService {
         if (!diff.isEmpty()) {
             audit.log(Events.MEMBER_UPDATED, membership.organizationId(), null, "membership", membership.id(), diff);
         }
+        if (diff.containsKey("status")) {
+            syncSeatGauge(membership.organizationId());
+        }
         return MembershipRead.from(members.findView(membership.id()).orElseThrow());
     }
 
@@ -204,6 +246,7 @@ public class OrganizationService {
         audit.log(Events.MEMBER_REMOVED, membership.organizationId(), null, "membership", membership.id(),
             Map.of("email", membership.invitedEmail() != null ? membership.invitedEmail() : String.valueOf(membership.userId())));
         members.delete(membership.id());
+        syncSeatGauge(membership.organizationId());
     }
 
     /** Accept an invitation with its emailed token (single-use); links the caller's user to the membership. */
@@ -237,7 +280,26 @@ public class OrganizationService {
         Membership accepted = members.findById(membership.id()).orElseThrow();
         audit.log(Events.MEMBER_JOINED, accepted.organizationId(), null, "membership", accepted.id(), Map.of("email", String.valueOf(accepted.invitedEmail())));
         outbox.append(Events.MEMBER_JOINED, "membership", accepted.id(), accepted.organizationId(), Map.of("email", String.valueOf(accepted.invitedEmail())));
+        syncSeatGauge(accepted.organizationId());
         return accepted;
+    }
+
+    /** Create the default-plan subscription for a brand-new org (skipped, with a warning, when the catalog is not synced). */
+    private void bootstrapSubscription(Organization org) {
+        Plan plan = plans.findByKey(props.defaultPlanKey(), true).orElse(null);
+        if (plan == null) {
+            log.warn("default_plan_missing key={}", props.defaultPlanKey());
+            return;
+        }
+        Instant now = Instant.now();
+        subscriptions.createSubscription(org.id(), plan, "active", now, now.plus(Duration.ofDays(30)), null, null, null, null);
+    }
+
+    /** {@code users} is a gauge: active members + pending invites, set after every change. */
+    private void syncSeatGauge(UUID organizationId) {
+        long active = members.countByStatus(organizationId, "active");
+        long pending = members.countByStatus(organizationId, "invited");
+        usage.setGauge(organizationId, UsageService.SEATS_METRIC, active + pending);
     }
 
     private Organization requireOrganization(UUID organizationId) {

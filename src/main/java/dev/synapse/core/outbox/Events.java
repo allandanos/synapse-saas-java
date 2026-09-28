@@ -36,6 +36,26 @@ public final class Events {
     public static final String MEMBER_ROLE_ASSIGNED = "member.role_assigned";
     public static final String MEMBER_ROLE_REVOKED = "member.role_revoked";
 
+    // Subscriptions / entitlements / billing
+    public static final String SUBSCRIPTION_TRIAL_STARTED = "subscription.trial_started";
+    public static final String SUBSCRIPTION_ACTIVATED = "subscription.activated";
+    public static final String SUBSCRIPTION_UPDATED = "subscription.updated";
+    public static final String SUBSCRIPTION_PLAN_CHANGED = "subscription.plan_changed";
+    public static final String SUBSCRIPTION_CANCELED = "subscription.canceled";
+    public static final String SUBSCRIPTION_RESUMED = "subscription.resumed";
+    public static final String SUBSCRIPTION_PAST_DUE = "subscription.past_due";
+    public static final String SUBSCRIPTION_EXPIRED = "subscription.expired";
+    public static final String ENTITLEMENT_GRANTED = "entitlement.granted";
+    public static final String ENTITLEMENT_REVOKED = "entitlement.revoked";
+    public static final String ENTITLEMENT_EXPIRED = "entitlement.expired";
+    public static final String INVOICE_CREATED = "invoice.created";
+    public static final String INVOICE_PAID = "invoice.paid";
+    public static final String INVOICE_FAILED = "invoice.failed";
+
+    // Usage
+    public static final String USAGE_SOFT_LIMIT_REACHED = "usage.soft_limit_reached";
+    public static final String USAGE_HARD_LIMIT_REACHED = "usage.hard_limit_reached";
+
     // API keys
     public static final String API_KEY_CREATED = "api_key.created";
     public static final String API_KEY_REVOKED = "api_key.revoked";

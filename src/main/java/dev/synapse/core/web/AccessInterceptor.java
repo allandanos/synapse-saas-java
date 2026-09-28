@@ -11,17 +11,19 @@ import org.springframework.web.servlet.HandlerInterceptor;
 /**
  * Runs the handler's access annotations in the reference's dependency order:
  * tenant resolution first (bind RLS tenant, membership, suspension), then the
- * permission check. Errors propagate to the problem-document advice.
+ * permission check, then the feature gate. Errors propagate to the problem-document advice.
  */
 @Component
 public class AccessInterceptor implements HandlerInterceptor {
 
     private final TenantAccess tenants;
     private final PermissionChecks permissions;
+    private final FeatureChecks features;
 
-    public AccessInterceptor(TenantAccess tenants, PermissionChecks permissions) {
+    public AccessInterceptor(TenantAccess tenants, PermissionChecks permissions, FeatureChecks features) {
         this.tenants = tenants;
         this.permissions = permissions;
+        this.features = features;
     }
 
     @Override
@@ -35,11 +37,15 @@ public class AccessInterceptor implements HandlerInterceptor {
         }
         RequirePermission permission = method.getMethodAnnotation(RequirePermission.class);
         RequireTenant tenant = method.getMethodAnnotation(RequireTenant.class);
-        if (permission != null || tenant != null) {
+        RequireFeature feature = method.getMethodAnnotation(RequireFeature.class);
+        if (permission != null || tenant != null || feature != null) {
             Principal principal = Principals.current();
             TenantContext resolved = tenants.resolve(request, principal);
             if (permission != null) {
                 permissions.require(permission.value(), principal, resolved);
+            }
+            if (feature != null) {
+                features.require(resolved.organizationId(), feature.value());
             }
         }
         return true;

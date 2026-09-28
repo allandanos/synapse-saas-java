@@ -57,6 +57,16 @@ synapse:
   cookie-secure: ${SYNAPSE_COOKIE_SECURE:}
   bootstrap-admin-email: ${SYNAPSE_BOOTSTRAP_ADMIN_EMAIL:}
   bootstrap-admin-password: ${SYNAPSE_BOOTSTRAP_ADMIN_PASSWORD:}
+  # Plan catalog: the packaged copy of the reference's config/plans.yaml unless SYNAPSE_PLANS_FILE points elsewhere
+  plans-file: ${SYNAPSE_PLANS_FILE:classpath:config/plans.yaml}
+  auto-sync-plans: ${SYNAPSE_AUTO_SYNC_PLANS:true}
+  default-plan-key: ${SYNAPSE_DEFAULT_PLAN_KEY:free}
+  grace-on-past-due: ${SYNAPSE_GRACE_ON_PAST_DUE:true}
+  billing-currency: ${SYNAPSE_BILLING_CURRENCY:PHP}
+  stripe-secret-key: ${SYNAPSE_STRIPE_SECRET_KEY:}
+  paddle-secret-key: ${SYNAPSE_PADDLE_SECRET_KEY:}
+  xendit-secret-key: ${SYNAPSE_XENDIT_SECRET_KEY:}
+  paymongo-secret-key: ${SYNAPSE_PAYMONGO_SECRET_KEY:}
 
 logging:
   level:

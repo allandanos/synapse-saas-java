@@ -29,7 +29,18 @@ public record SynapseProperties(
     @DefaultValue("") List<String> webOrigins,
     Boolean cookieSecure,
     @DefaultValue("") String bootstrapAdminEmail,
-    @DefaultValue("") String bootstrapAdminPassword
+    @DefaultValue("") String bootstrapAdminPassword,
+    // ── Plans / catalog (reference: plans_file, auto_sync_plans, default_plan_key, grace_on_past_due)
+    @DefaultValue("classpath:config/plans.yaml") String plansFile,
+    @DefaultValue("true") boolean autoSyncPlans,
+    @DefaultValue("free") String defaultPlanKey,
+    @DefaultValue("true") boolean graceOnPastDue,
+    // ── Billing
+    @DefaultValue("PHP") String billingCurrency,
+    @DefaultValue("") String stripeSecretKey,
+    @DefaultValue("") String paddleSecretKey,
+    @DefaultValue("") String xenditSecretKey,
+    @DefaultValue("") String paymongoSecretKey
 ) {
     public static final String DEV_SECRET_PREFIX = "dev-only-";
 
