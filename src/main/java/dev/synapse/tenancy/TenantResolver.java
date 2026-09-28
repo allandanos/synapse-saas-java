@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -32,6 +33,22 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class TenantResolver implements TenantAccess {
 
     private static final Set<String> NON_TENANT_SUBDOMAINS = Set.of("www", "api", "app");
+    private static final Pattern IPV4 = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
+
+    /** {@code Host} without the port; a bracketed IPv6 literal keeps its brackets for {@link #isIpLiteral}. */
+    static String hostName(String hostHeader) {
+        String h = hostHeader.trim().toLowerCase(Locale.ROOT);
+        if (h.startsWith("[")) {
+            int end = h.indexOf(']');
+            return end < 0 ? h : h.substring(0, end + 1);
+        }
+        return h.split(":")[0];
+    }
+
+    static boolean isIpLiteral(String host) {
+        String bare = host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+        return IPV4.matcher(bare).matches() || bare.contains(":");
+    }
 
     private final OrganizationRepository orgs;
     private final MembershipRepository members;
@@ -102,10 +119,12 @@ public class TenantResolver implements TenantAccess {
         if (slug != null && !slug.isEmpty()) {
             return slug;
         }
+        // Subdomain: acme.localhost / acme.app.example.com (skip www, api, app). An IP literal
+        // (127.0.0.1, [::1]) is not a tenant slug: fall through to the JWT claim instead of 404 for "127".
         String host = request.getHeader("Host");
         if (host != null) {
-            String name = host.split(":")[0].toLowerCase(Locale.ROOT);
-            if (name.contains(".") && !NON_TENANT_SUBDOMAINS.contains(name.split("\\.")[0])) {
+            String name = hostName(host);
+            if (name.contains(".") && !isIpLiteral(name) && !NON_TENANT_SUBDOMAINS.contains(name.split("\\.")[0])) {
                 return name.split("\\.")[0];
             }
         }

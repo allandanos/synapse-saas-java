@@ -164,8 +164,10 @@ class ApiJourneyTest extends PostgresTestSupport {
 
         assertThat(api.get("/v1/orgs/current", Map.of("Authorization", "Bearer " + owner.accessToken(), "X-Org-Slug", owner.slug())).status()).isEqualTo(200);
         assertThat(api.get("/v1/orgs/current", Map.of("Authorization", "Bearer " + owner.accessToken(), "Host", owner.slug() + ".localhost:8080")).status()).isEqualTo(200);
+        assertProblem(api.get("/v1/orgs/current", Map.of("Authorization", "Bearer " + owner.accessToken(), "Host", "127.0.0.1:8080")), 404, "not found"); // an IP literal is not a slug
         Res switched = api.post("/v1/auth/switch-org", owner.bearer(), Map.of("organization_id", owner.orgId()));
         assertThat(switched.status()).isEqualTo(200);
+        assertThat(switched.header("Set-Cookie")).contains("synapse_rt="); // the rotated refresh token travels in the cookie
         assertThat(api.get("/v1/orgs/current", Map.of("Authorization", "Bearer " + switched.text("access_token"))).text("slug")).isEqualTo(owner.slug());
         assertProblem(api.post("/v1/auth/switch-org", owner.bearer(), Map.of("organization_id", UUID.randomUUID().toString())), 404);
 
@@ -196,7 +198,9 @@ class ApiJourneyTest extends PostgresTestSupport {
         assertThat(audienceOf("member.invite_email", membershipUuid)).isEqualTo("internal");
         String inviteToken = (String) mail.get("invite_token");
         assertThat(inviteToken).isNotBlank();
-        assertProblem(api.post("/v1/orgs/current/members/invite", owner.headers(), Map.of("email", inviteeEmail)), 409, "conflict");
+        JsonNode dupInvite = assertProblem(api.post("/v1/orgs/current/members/invite", owner.headers(), Map.of("email", inviteeEmail)), 409, "conflict");
+        assertThat(dupInvite.get("membership_status").asText()).isEqualTo("invited");
+        assertThat(outboxPayload("member.invited", membershipUuid)).containsEntry("org_name", "Renamed"); // the mail names the org
         assertProblem(api.post("/v1/orgs/current/members/invite", owner.headers(), Map.of("email", "x-" + ApiClient.uid() + "@example.com", "role_keys", List.of("nope"))), 404, "role not found");
         assertThat(api.get("/v1/orgs/current/members?limit=1", owner.headers()).body().at("/meta/total").asInt()).isEqualTo(2);
 
@@ -305,7 +309,8 @@ class ApiJourneyTest extends PostgresTestSupport {
         JsonNode unknown = assertProblem(api.post("/v1/roles", tenant.headers(), Map.of("key", "x_" + ApiClient.uid(), "name", "Valid", "permissions", List.of("nope:nope"))), 403, "permission denied");
         assertThat(unknown.get("unknown").get(0).asText()).isEqualTo("nope:nope");
         assertProblem(api.post("/v1/roles", tenant.headers(), Map.of("key", "Bad-Key", "name", "Valid", "permissions", List.of())), 422, "validation failed");
-        assertProblem(api.post("/v1/roles", tenant.headers(), Map.of("key", key, "name", "Again", "permissions", List.of())), 409, "conflict");
+        JsonNode dupKey = assertProblem(api.post("/v1/roles", tenant.headers(), Map.of("key", key, "name", "Again", "permissions", List.of())), 409, "conflict");
+        assertThat(dupKey.get("key").asText()).isEqualTo(key);
 
         // A member holding the custom role sees permission edits immediately.
         String email = "holder-" + ApiClient.uid() + "@conformance.example.com";

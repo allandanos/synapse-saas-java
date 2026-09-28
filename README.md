@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@820ce2f` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@4de2026` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -165,24 +165,21 @@ contracts/                                          snapshot of the reference co
 
 ## Notes on the baseline
 
-`contracts/schema-v1.sql` is a `pg_dump` in dump order without the usual
-`SET check_function_bodies = false` header, so its SQL-language functions
-(`synapse_org_for_invite_token`, `synapse_org_for_provider_ref`) are created
-before the tables they read. Flyway applies it with
-`spring.flyway.init-sqls: SET check_function_bodies = false` so the file can
-stay byte-identical to the contract.
+`contracts/schema-v1.sql` is a `pg_dump` in dump order: its SQL-language
+functions (`synapse_org_for_invite_token`, `synapse_org_for_provider_ref`) are
+created before the tables they read, which only applies with
+`check_function_bodies` off. The contract carries that `SET` line since
+`synapse-saas@4de2026`; Flyway additionally runs it as `init-sqls` so the
+baseline applies even when a copy of the file loses its header.
 
 ## Known differences from the reference server
 
 Behaviour a client can distinguish, kept deliberately:
 
-- Unique-constraint violations (duplicate invite email, duplicate custom-role
-  key) are a 409 `conflict` problem; the reference answers 500.
-- Unknown paths and unsupported methods are `not_found` / `method_not_allowed`
-  problem documents; the reference returns FastAPI's `{"detail": ...}`.
-- `POST /v1/orgs/current/members/invite` returns the roles actually attached
-  (`role_keys: ["member"]`); the reference's response shows `[]`.
 - Deleting a custom role recomputes the affected members' permission sets;
   the reference leaves the denormalised keys stale until the next role write.
+- Any unexpected unique-constraint violation (not the invite-email and
+  role-key cases, which the contract now answers with 409) is a 409
+  `conflict` problem instead of a 500.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.

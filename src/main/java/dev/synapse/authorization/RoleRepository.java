@@ -52,6 +52,11 @@ public class RoleRepository {
             .param("key", key).param("org", organizationId).query(MAPPER).optional();
     }
 
+    public boolean customKeyExists(UUID organizationId, String key) {
+        return jdbc.sql("SELECT count(*) FROM roles WHERE organization_id = :org AND key = :key")
+            .param("org", organizationId).param("key", key).query(Long.class).single() > 0;
+    }
+
     public Role insert(UUID organizationId, String key, String name, String description, boolean system) {
         UUID id = UUID.randomUUID();
         jdbc.sql("INSERT INTO roles (id, organization_id, key, name, description, is_system) VALUES (:id, :org, :key, :name, :description, :system)")

@@ -82,8 +82,10 @@ public class AuthController {
     }
 
     @PostMapping("/switch-org")
-    public SwitchOrgResponse switchOrg(@Valid @RequestBody SwitchOrgRequest body, Principal principal) {
-        return identity.switchOrg(principal.id(), body.organizationId());
+    public SwitchOrgResponse switchOrg(@Valid @RequestBody SwitchOrgRequest body, Principal principal, HttpServletResponse response) {
+        TokenPair pair = identity.switchOrg(principal.id(), body.organizationId());
+        cookie.set(response, pair.refreshToken());
+        return new SwitchOrgResponse(pair.accessToken(), pair.tokenType(), pair.expiresIn());
     }
 
     @PostMapping("/accept-invite")

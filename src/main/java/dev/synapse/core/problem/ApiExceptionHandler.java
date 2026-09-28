@@ -132,19 +132,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     protected ResponseEntity<Object> handleExceptionInternal(
             Exception ex, Object body, HttpHeaders headers, HttpStatusCode statusCode, WebRequest request) {
         int status = statusCode.value();
+        // contracts/problems.json: not_found (404), method_not_allowed (405), http_error (anything else)
         String title = switch (status) {
-            case 400 -> "bad_request";
             case 404 -> "not_found";
             case 405 -> "method_not_allowed";
-            case 406 -> "not_acceptable";
-            case 415 -> "unsupported_media_type";
-            case 503 -> "service_unavailable";
-            default -> status >= 500 ? "internal_error" : "bad_request";
+            default -> status >= 500 ? "internal_error" : "http_error";
         };
         String detail = switch (status) {
             case 404 -> "Not Found";
             case 405 -> "Method Not Allowed";
-            default -> ex.getMessage() == null ? ProblemDocument.humanTitle(title) : ex.getMessage();
+            default -> ex.getMessage() == null || ex.getMessage().isBlank() ? "Request rejected" : ex.getMessage();
         };
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON);
         if (headers != null && headers.getAllow() != null && !headers.getAllow().isEmpty()) {

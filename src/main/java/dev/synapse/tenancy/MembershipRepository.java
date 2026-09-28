@@ -87,6 +87,12 @@ public class MembershipRepository {
             .param("org", organizationId).param("email", email).query(MAPPER).optional();
     }
 
+    /** Any membership row (invited, active or suspended) carrying this invited email. */
+    public Optional<Membership> findByInvitedEmail(UUID organizationId, String email) {
+        return jdbc.sql("SELECT * FROM memberships WHERE organization_id = :org AND invited_email = CAST(:email AS citext)")
+            .param("org", organizationId).param("email", email).query(MAPPER).optional();
+    }
+
     public Optional<Membership> findPendingByTokenHash(String tokenHash) {
         return jdbc.sql("SELECT * FROM memberships WHERE invite_token_hash = :hash AND status = 'invited'")
             .param("hash", tokenHash).query(MAPPER).optional();

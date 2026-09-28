@@ -1,5 +1,6 @@
 package dev.synapse.authorization;
 
+import dev.synapse.core.errors.ConflictError;
 import dev.synapse.core.errors.PermissionDeniedError;
 import dev.synapse.core.errors.RoleNotFoundError;
 import dev.synapse.core.errors.SystemRoleImmutableError;
@@ -50,6 +51,9 @@ public class AuthorizationService {
     @Transactional
     public Role createCustomRole(UUID organizationId, String key, String name, String description, List<String> permissionKeys) {
         rejectUnknown(permissionKeys);
+        if (roles.customKeyExists(organizationId, key)) { // the unique constraint would 500; say why instead
+            throw new ConflictError("Role key '" + key + "' already exists in this organization", Map.of("key", key));
+        }
         Role role = roles.insert(organizationId, key, name, description, false);
         roles.setPermissions(role.id(), permissionKeys);
         return roles.findById(role.id()).orElseThrow();

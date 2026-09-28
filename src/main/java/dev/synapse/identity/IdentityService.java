@@ -14,7 +14,6 @@ import dev.synapse.core.outbox.OutboxWriter;
 import dev.synapse.core.validation.Emails;
 import dev.synapse.identity.dto.AuthResponse;
 import dev.synapse.identity.dto.OrgSummary;
-import dev.synapse.identity.dto.SwitchOrgResponse;
 import dev.synapse.identity.dto.TokenPair;
 import dev.synapse.identity.dto.UserRead;
 import dev.synapse.identity.dto.UserWithOrgs;
@@ -124,15 +123,18 @@ public class IdentityService {
         return UserWithOrgs.from(user, orgs);
     }
 
-    /** Mint a pair scoped to an org the user is an active member of; the reference answers 200 with the access token. */
+    /**
+     * Mint a pair scoped to an org the user is an active member of: the {@code org}
+     * claim resolves the tenant when no header is sent; the controller answers 200
+     * with the access token and puts the rotated refresh token in the cookie.
+     */
     @Transactional
-    public SwitchOrgResponse switchOrg(UUID userId, UUID organizationId) {
+    public TokenPair switchOrg(UUID userId, UUID organizationId) {
         if (memberships.findActive(organizationId, userId).isEmpty()) {
             throw new NotFoundError("Organization not found");
         }
         User user = users.findById(userId).orElseThrow(() -> new UserNotFoundError("User not found"));
-        TokenPair pair = issueTokens(user, organizationId, null, null);
-        return new SwitchOrgResponse(pair.accessToken(), pair.tokenType(), pair.expiresIn());
+        return issueTokens(user, organizationId, null, null);
     }
 
     // ── Tokens ───────────────────────────────────────────────────────────────────

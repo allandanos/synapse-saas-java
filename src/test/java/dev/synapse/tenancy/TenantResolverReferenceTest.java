@@ -45,6 +45,13 @@ class TenantResolverReferenceTest {
         host.addHeader("Host", "acme.localhost:8080");
         assertThat(resolver.resolveOrgReference(host)).isEqualTo("acme");
 
+        MockHttpServletRequest ip = new MockHttpServletRequest();
+        ip.addHeader("Host", "127.0.0.1:8080");
+        assertThat(resolver.resolveOrgReference(ip)).isNull(); // IP literals never resolve the slug "127"
+        MockHttpServletRequest ipv6 = new MockHttpServletRequest();
+        ipv6.addHeader("Host", "[::1]:8080");
+        assertThat(resolver.resolveOrgReference(ipv6)).isNull();
+
         MockHttpServletRequest www = new MockHttpServletRequest();
         www.addHeader("Host", "www.example.com");
         assertThat(resolver.resolveOrgReference(www)).isNull();

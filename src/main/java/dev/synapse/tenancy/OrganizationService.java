@@ -6,6 +6,7 @@ import dev.synapse.core.audit.AuditService;
 import dev.synapse.core.context.TenantContext;
 import dev.synapse.core.db.Json;
 import dev.synapse.core.db.RlsGucs;
+import dev.synapse.core.errors.ConflictError;
 import dev.synapse.core.errors.InviteNotFoundError;
 import dev.synapse.core.errors.NotFoundError;
 import dev.synapse.core.errors.SlugUnavailableError;
@@ -41,7 +42,6 @@ public class OrganizationService {
 
     private static final Logger log = LoggerFactory.getLogger(OrganizationService.class);
     static final int INVITE_TOKEN_BYTES = 32;
-    static final String DEFAULT_ORG_NAME_IN_MAIL = "your organization";
 
     private final OrganizationRepository orgs;
     private final MembershipRepository members;
@@ -151,6 +151,12 @@ public class OrganizationService {
     @Transactional
     public MembershipRead inviteMember(UUID organizationId, String rawEmail, List<String> roleKeys) {
         String email = Emails.normalize(rawEmail);
+        Organization org = requireOrganization(organizationId);
+        members.findByInvitedEmail(organizationId, email).ifPresent(existing -> {
+            // the unique constraint would 500; say why instead
+            throw new ConflictError("This email is already invited to (or a member of) the organization",
+                Map.of("email", email, "membership_status", existing.status()));
+        });
         Membership membership = members.insert(organizationId, null, email, "invited", null);
         List<String> keys = roleKeys.isEmpty() ? List.of("member") : roleKeys;
         List<String> permissionKeys = List.of();
@@ -163,10 +169,10 @@ public class OrganizationService {
         audit.log(Events.MEMBER_INVITED, organizationId, null, "membership", membership.id(), Map.of("email", email, "roles", keys));
         // Public event (tenant webhooks): no credential material, ever.
         outbox.append(Events.MEMBER_INVITED, "membership", membership.id(), organizationId,
-            Map.of("email", email, "org_name", DEFAULT_ORG_NAME_IN_MAIL, "membership_id", membership.id().toString()));
-        // Internal event (email only): carries the token; never fans out.
+            Map.of("email", email, "org_name", org.name(), "membership_id", membership.id().toString()));
+        // Internal event (email only): carries the token; never fans out. The mail names the org.
         outbox.append(Events.MEMBER_INVITE_EMAIL, "membership", membership.id(), organizationId,
-            Map.of("email", email, "invite_token", token, "org_name", DEFAULT_ORG_NAME_IN_MAIL));
+            Map.of("email", email, "invite_token", token, "org_name", org.name()));
         return MembershipRead.from(members.findView(membership.id()).orElseThrow());
     }
 
