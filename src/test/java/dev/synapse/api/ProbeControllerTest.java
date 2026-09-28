@@ -12,6 +12,7 @@ import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.core.problem.ApiExceptionHandler;
 import dev.synapse.core.problem.ProblemWriter;
 import dev.synapse.core.security.SecurityConfig;
+import dev.synapse.core.web.FeatureChecks;
 import dev.synapse.core.web.PermissionChecks;
 import dev.synapse.core.web.TenantAccess;
 import dev.synapse.tenancy.OrganizationController;
@@ -34,6 +35,7 @@ class ProbeControllerTest {
     @MockitoBean SynapseProperties props;
     @MockitoBean TenantAccess tenants;
     @MockitoBean PermissionChecks permissions;
+    @MockitoBean FeatureChecks features;
     @MockitoBean OrganizationService organizations;
 
     @Test
