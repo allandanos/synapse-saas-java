@@ -6,17 +6,30 @@ spring:
     url: ${SYNAPSE_JDBC_URL:jdbc:postgresql://localhost:5433/synapse}
     username: ${SYNAPSE_DB_USER:synapse}
     password: ${SYNAPSE_DB_PASSWORD:synapse}
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: none   # schema comes from Flyway (V1__baseline.sql = contracts/schema-v1.sql), never from entities
+    hikari:
+      # `timestamp without time zone` defaults (now()) follow the session zone; the reference's are UTC
+      connection-init-sql: SET TIME ZONE 'UTC'
   flyway:
-    enabled: true
+    enabled: true   # schema comes from V1__baseline.sql (= contracts/schema-v1.sql), never from code
+    # The baseline is a pg_dump in dump order: SQL-language functions (synapse_org_for_invite_token,
+    # synapse_org_for_provider_ref) precede the tables they read, which only applies with body checks off.
+    init-sqls:
+      - SET check_function_bodies = false
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+  mvc:
+    problemdetails:
+      enabled: false   # problem documents are rendered by dev.synapse.core.problem (application/json, reference shape)
 
 server:
   port: ${PORT:8080}
   error:
     include-message: never
+    whitelabel:
+      enabled: false
 
 management:
   endpoints:
@@ -27,8 +40,24 @@ management:
       path-mapping:
         prometheus: metrics
 
+# Every key below also binds from the environment as SYNAPSE_<KEY> (relaxed binding),
+# the same names the reference implementation reads.
 synapse:
   version: 0.1.0
+  env: ${SYNAPSE_ENV:development}
   billing-provider: ${SYNAPSE_BILLING_PROVIDER:manual}
   identity-provider: ${SYNAPSE_IDENTITY_PROVIDER:local}
   tenant-isolation: ${SYNAPSE_TENANT_ISOLATION:app}
+  secret-key: ${SYNAPSE_SECRET_KEY:dev-only-secret-key-change-me-32-bytes-minimum!}
+  access-token-ttl-minutes: ${SYNAPSE_ACCESS_TOKEN_TTL_MINUTES:15}
+  refresh-token-ttl-days: ${SYNAPSE_REFRESH_TOKEN_TTL_DAYS:30}
+  refresh-reuse-grace-seconds: ${SYNAPSE_REFRESH_REUSE_GRACE_SECONDS:10}
+  web-origin: ${SYNAPSE_WEB_ORIGIN:http://localhost:3000}
+  web-origins: ${SYNAPSE_WEB_ORIGINS:}
+  cookie-secure: ${SYNAPSE_COOKIE_SECURE:}
+  bootstrap-admin-email: ${SYNAPSE_BOOTSTRAP_ADMIN_EMAIL:}
+  bootstrap-admin-password: ${SYNAPSE_BOOTSTRAP_ADMIN_PASSWORD:}
+
+logging:
+  level:
+    dev.synapse: INFO

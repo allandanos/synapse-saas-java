@@ -1,6 +1,6 @@
 package dev.synapse.api;
 
-import dev.synapse.core.SynapseProperties;
+import dev.synapse.core.config.SynapseProperties;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
@@ -43,6 +43,7 @@ public class ProbeController {
     @GetMapping("/v1/meta")
     public Map<String, String> meta() {
         return Map.of(
+            "framework", "synapse-saas",
             "version", props.version(),
             "billing_provider", props.billingProvider(),
             "identity_provider", props.identityProvider(),
