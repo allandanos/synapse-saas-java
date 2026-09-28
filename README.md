@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@4de2026` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@1184245` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -14,8 +14,8 @@ that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entr
 | Milestone | Scope | State |
 |---|---|---|
 | 1 | pure logic + core + probes/`/v1/meta` | **done** — problem documents for every error, request context + `X-Request-Id`, RLS GUCs, transactional outbox + audit writers, Flyway baseline |
-| 2 | identity, tenancy, authorization (RBAC), API keys | **done** — `test_meta_and_health`, `test_auth`, `test_tenancy`, `test_authorization`, `test_api_keys` pass (the one exception is `test_key_lifecycle`, which calls `/v1/usage/*` — milestone 3) |
-| 3 | subscriptions, entitlements, usage | — |
+| 2 | identity, tenancy, authorization (RBAC), API keys | **done** — `test_meta_and_health`, `test_auth`, `test_tenancy`, `test_authorization`, `test_api_keys` pass |
+| 3 | subscriptions, entitlements, usage | **done** — plan catalog (`plans.yaml` → validated → synced at boot), default `free` subscription, trial/change/cancel/resume with the state machine and arrears proration, entitlement resolver + operator grants, counters/gauges/idempotency/atomic enforcement, `api_requests` metering of key auth, `users` seat gauge + invite cap. `test_subscriptions`, `test_usage_and_entitlements` and `test_api_keys` pass — except `test_feature_gate_problem_shape`, which needs `GET /v1/agents` (milestone 5) |
 | 4 | billing, invoicing, worker | — |
 | 5 | webhooks, files, flags, audit, agents | — |
 | 6 | console parity (Playwright) | — |
@@ -26,11 +26,17 @@ against this server (`make conformance`).
 
 ### Deliberately left for later milestones
 
-- Default-plan subscription on org creation, the `users` seat gauge and the
-  seat limit on invites, `api_requests` metering of key-authenticated calls
-  (milestone 3 — they need the plan catalog and usage counters).
-- Redis-backed permission/membership caches and the auth rate limiter
-  (`core/cache`, `core/rate_limit`): every check reads Postgres directly.
+- Billing beyond the plan change: customers, checkout, invoices, provider
+  webhooks, the renewal/partition-maintenance worker (milestone 4). The
+  provider capability table already drives `POST /v1/subscription/change`
+  (hosted providers answer 409 `checkout_required` until a subscription was
+  purchased through them); the "hosted provider holds the subscription"
+  branch reaches `BillingProvider.changePlan`, a clearly marked seam.
+- Redis-backed permission/membership/entitlement caches and the auth rate
+  limiter (`core/cache`, `core/rate_limit`): every check reads Postgres
+  directly; `EntitlementCache` is the drop-in seam.
+- `GET /v1/agents` and the other feature-gated routes (milestone 5) — the
+  gate itself (`@RequireFeature`, `FeatureGate`) is in place.
 - OIDC login and OpenFGA (milestone 7). SSO-only users get the reference's
   401 `sso_url` problem from `/v1/auth/login`, but `/v1/auth/oidc/*` does not exist yet.
 
@@ -72,10 +78,25 @@ java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar
 
 On boot the app applies the Flyway baseline, seeds the 21-permission catalog
 and the five system roles idempotently (`SystemSeeder`, the reference's
-`synapse-cli seed`), and creates-or-promotes the platform operator when the
+`synapse-cli seed`), creates-or-promotes the platform operator when the
 bootstrap variables are set (`PlatformAdminBootstrap`; an existing account is
-promoted, its password is left untouched). That operator is what the external
-conformance suite logs in with (`SYNAPSE_CONFORMANCE_ADMIN_EMAIL/PASSWORD`).
+promoted, its password is left untouched), and syncs the plan catalog
+(`PlanCatalogSyncRunner`, `SYNAPSE_AUTO_SYNC_PLANS=true`). That operator is
+what the external conformance suite logs in with
+(`SYNAPSE_CONFORMANCE_ADMIN_EMAIL/PASSWORD`).
+
+### Plan catalog
+
+`src/main/resources/config/plans.yaml` is a verbatim copy of the reference's
+catalog (a unit test keeps them identical); `SYNAPSE_PLANS_FILE` points a
+product at its own file. `PlanCatalog.fromRaw` mirrors the pydantic models —
+field constraints, `extra="forbid"`, the `price_cents` xor `price: custom`
+rule — and then the cross checks (unknown features/metrics, duplicate keys,
+overage on unlimited metrics, public plans without a concrete price), reported
+all at once as a `plan_catalog_invalid` problem. `PlanCatalogSync` projects it
+onto `features`/`metrics`/`plans`/`plan_features`/`plan_limits`: upserts by
+natural key, removed plans are archived, existing `plan_snapshot`s are never
+rewritten. `java -jar … --plans-sync --server.port=0` syncs once and exits.
 
 ### Row-level security mode
 
@@ -122,16 +143,27 @@ Same names and defaults as the reference wherever the concept exists
 | `SYNAPSE_WEB_ORIGIN`, `SYNAPSE_WEB_ORIGINS` | `http://localhost:3000` | CORS; `X-Request-Id`, `X-Total-Count`, … are exposed |
 | `SYNAPSE_COOKIE_SECURE` | derived | refresh cookie `synapse_rt` Secure flag |
 | `SYNAPSE_BOOTSTRAP_ADMIN_EMAIL` / `..._PASSWORD` | unset | platform operator bootstrap (see above) |
-| `SYNAPSE_BILLING_PROVIDER`, `SYNAPSE_IDENTITY_PROVIDER` | `manual`, `local` | reported by `/v1/meta` |
+| `SYNAPSE_BILLING_PROVIDER`, `SYNAPSE_IDENTITY_PROVIDER` | `manual`, `local` | reported by `/v1/meta`; the billing provider decides how `POST /v1/subscription/change` behaves (capability table, ADR 0004) |
+| `SYNAPSE_PLANS_FILE` | `classpath:config/plans.yaml` | the plan catalog (a filesystem path or `classpath:` resource) |
+| `SYNAPSE_AUTO_SYNC_PLANS` | `true` | sync the catalog into the database at every boot (failure is fatal only in production) |
+| `SYNAPSE_DEFAULT_PLAN_KEY` | `free` | the subscription every new organization starts on, and the plan an org without one resolves against |
+| `SYNAPSE_GRACE_ON_PAST_DUE` | `true` | `past_due` keeps plan features |
+| `SYNAPSE_BILLING_CURRENCY` | `PHP` | |
+| `SYNAPSE_STRIPE_SECRET_KEY`, `SYNAPSE_PADDLE_SECRET_KEY`, `SYNAPSE_XENDIT_SECRET_KEY`, `SYNAPSE_PAYMONGO_SECRET_KEY` | unset | required when that provider is selected (409 `billing_provider_not_configured` otherwise); the provider HTTP integrations are milestone 4 |
 
 ### Tests
 
 - `mvn test` runs the pure-logic unit tests (permission catalog and role
   sets, JWT claims, argon2 interop with a reference hash, problem documents,
-  ids/slugs, email validation, tenant resolution order) and the
-  `@SpringBootTest` journeys in `ApiJourneyTest` (register → org → invite →
-  accept → roles → API keys → operator suspension, and the problem-document
-  contract) over a real Postgres.
+  ids/slugs, email validation, tenant resolution order, and the milestone-3
+  transliterations: catalog validation, subscription state machine, proration
+  arithmetic, entitlement resolver matrix, `checkAgainst`) and the
+  `@SpringBootTest` journeys over a real Postgres: `ApiJourneyTest` (register →
+  org → invite → accept → roles → API keys → operator suspension, and the
+  problem-document contract) and `BillingJourneyTest` (catalog → free plan →
+  consume until 402 → trial → paid plans with proration → idempotent record →
+  batch rollback → gauges + seats → operator grants + feature gate → key-auth
+  metering → ten parallel consumers against a three-slot limit).
 - The journeys use Testcontainers (`pgvector/pgvector:pg17` — the baseline
   needs `vector` and `citext`) unless `SYNAPSE_TEST_JDBC_URL` points at an
   existing scratch database (`make test-pg`).
@@ -155,10 +187,17 @@ src/main/java/dev/synapse/
   identity/        users, refresh + reset tokens, PasswordHasher, JwtCodec, IdentityService, AuthController
   tenancy/         organizations, memberships, TenantResolver (X-Org-Id → X-Org-Slug → subdomain → JWT org), controllers
   authorization/   PermissionCatalog (transliterated), roles, AuthorizationService, PermissionGuard, SystemSeeder
-  apikeys/         keys bounded by their creator, ApiKeyAuthenticator, controller
+  apikeys/         keys bounded by their creator, ApiKeyAuthenticator (+ api_requests metering), controller
+  subscriptions/   PlanCatalog (+ loader, sync, boot runner), Plan/Metric/Subscription records + repositories,
+                   SubscriptionStateMachine, Proration, SubscriptionService, /v1/plans, /v1/subscription
+  billing/         BillingCapability table, ManualBillingProvider, hosted-provider descriptors, BillingService.changePlan
+  entitlements/    EntitlementResolver (pure), EntitlementService (+ cache seam), FeatureGate (@RequireFeature),
+                   /v1/entitlements, operator /v1/admin/orgs/{id}/entitlements
+  usage/           UsageService (record/consume/gauges/idempotency/soft limits), UsageRepository, /v1/usage/*
   bootstrap/       PlatformAdminBootstrap
   api/             probes + /v1/meta
 src/main/resources/db/migration/V1__baseline.sql   (= contracts/schema-v1.sql)
+src/main/resources/config/plans.yaml                (= the reference's config/plans.yaml)
 src/test/java/dev/synapse/                          unit tests + journey/ApiJourneyTest + support/
 contracts/                                          snapshot of the reference contract
 ```
@@ -181,5 +220,12 @@ Behaviour a client can distinguish, kept deliberately:
 - Any unexpected unique-constraint violation (not the invite-email and
   role-key cases, which the contract now answers with 409) is a 409
   `conflict` problem instead of a 500.
+- `GET /v1/usage/summary?period=2026-13` (matches the `YYYY-MM` pattern but
+  is not a month) is a 422 `validation_failed`; the reference raises from
+  `strptime` and answers 500.
+- API-key metering of `api_requests` runs in its own short transaction right
+  after authentication (the reference uses a savepoint inside the request
+  transaction); the observable contract — a metering failure never fails the
+  request — is the same.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.

@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-pg run run-pg run-rls conformance conformance-all
+.PHONY: build test test-unit test-pg run run-pg run-rls plans-sync conformance conformance-all
 REF ?= ../synapse-saas
 # The reference's scratch Postgres (docker compose --profile test) with this port's own database
 PG_TEST_URL ?= jdbc:postgresql://localhost:5434/synapse_java
@@ -29,11 +29,17 @@ run-rls: ## Boot on :8080 as the RLS-subject role with SYNAPSE_TENANT_ISOLATION=
 		SYNAPSE_BOOTSTRAP_ADMIN_EMAIL=$(ADMIN_EMAIL) SYNAPSE_BOOTSTRAP_ADMIN_PASSWORD=$(ADMIN_PASSWORD) \
 		mvn -q -B spring-boot:run
 
-conformance: ## The reference repo's black-box suite against this port on :8080 (milestone 2 modules)
+plans-sync: ## Sync plans.yaml into the scratch database once and exit (the reference's `synapse-cli plans sync`)
+	SYNAPSE_JDBC_URL=$(PG_TEST_URL) java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --plans-sync --server.port=0
+
+conformance: ## The reference repo's black-box suite against this port on :8080 (milestone 1–3 modules; test_feature_gate_problem_shape needs GET /v1/agents from milestone 5)
 	cd $(REF) && SYNAPSE_CONFORMANCE_API_URL=http://localhost:8080 \
 		SYNAPSE_CONFORMANCE_ADMIN_EMAIL=$(ADMIN_EMAIL) SYNAPSE_CONFORMANCE_ADMIN_PASSWORD=$(ADMIN_PASSWORD) \
-		uv run pytest tests/conformance/test_meta_and_health.py tests/conformance/test_auth.py tests/conformance/test_tenancy.py \
-		tests/conformance/test_authorization.py tests/conformance/test_api_keys.py -m "" --no-cov -q -p no:cacheprovider
+		uv run pytest tests/conformance/test_meta_and_health.py tests/conformance/test_problem_documents.py tests/conformance/test_auth.py \
+		tests/conformance/test_tenancy.py tests/conformance/test_authorization.py tests/conformance/test_api_keys.py \
+		tests/conformance/test_subscriptions.py tests/conformance/test_usage_and_entitlements.py \
+		--deselect tests/conformance/test_usage_and_entitlements.py::test_feature_gate_problem_shape \
+		-m "" --no-cov -q -p no:cacheprovider
 
 conformance-all: ## Every conformance module (later milestones will fail until implemented)
 	cd $(REF) && SYNAPSE_CONFORMANCE_API_URL=http://localhost:8080 \
