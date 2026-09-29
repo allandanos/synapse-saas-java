@@ -43,6 +43,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST,
                     "/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout",
                     "/v1/auth/forgot-password", "/v1/auth/reset-password").permitAll()
+                // Provider webhooks authenticate themselves by signature/token, never by bearer
+                .requestMatchers(HttpMethod.POST, "/v1/billing/webhooks/*").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated())
             .build();

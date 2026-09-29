@@ -1,10 +1,21 @@
 package dev.synapse.billing;
 
+import dev.synapse.billing.BillingRefs.BillingCustomerRef;
+import dev.synapse.billing.BillingRefs.ChangePlanRequest;
+import dev.synapse.billing.BillingRefs.CheckoutResult;
+import dev.synapse.billing.BillingRefs.CreateCheckoutRequest;
+import dev.synapse.billing.BillingRefs.CreateCustomerRequest;
+import dev.synapse.billing.BillingRefs.SubscriptionRef;
+import dev.synapse.core.config.SynapseProperties;
+import dev.synapse.core.errors.CheckoutConfirmNotAllowedError;
 import dev.synapse.core.errors.CheckoutRequiredError;
+import dev.synapse.identity.User;
+import dev.synapse.identity.UserRepository;
 import dev.synapse.subscriptions.Plan;
 import dev.synapse.subscriptions.Proration;
 import dev.synapse.subscriptions.Subscription;
 import dev.synapse.subscriptions.SubscriptionService;
+import dev.synapse.tenancy.Organization;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -16,8 +27,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Plan changes through the active provider (reference: {@code billing/service.py:change_plan}).
- * Customers, checkout, invoices and webhooks join in milestone 4.
+ * Billing domain service (reference: {@code billing/service.py}): customers,
+ * checkout, the billing portal, and plan changes through the active provider.
+ * Provider calls happen BEFORE the database mutation so a failed provider call
+ * leaves no local state behind.
  */
 @Service
 public class BillingService {
@@ -25,17 +38,93 @@ public class BillingService {
     private static final Logger log = LoggerFactory.getLogger(BillingService.class);
     public static final String UPGRADE_URL = "/dashboard/billing";
     public static final String CHECKOUT_URL = "/v1/billing/checkout";
+    /** The tenant confirming its own activation — only trustworthy on a {@code client_confirm} provider. */
+    public static final String SOURCE_CLIENT_CONFIRM = "client_confirm";
+    public static final String SOURCE_WEBHOOK = "webhook";
 
     /** What the org was paying, and for which period, before the change. */
     public record PeriodSnapshot(String planKey, long priceCents, Instant periodStart, Instant periodEnd) {}
 
     private final SubscriptionService subscriptions;
     private final BillingProviderRegistry providers;
+    private final BillingCustomerRepository customers;
+    private final UserRepository users;
+    private final SynapseProperties props;
 
-    public BillingService(SubscriptionService subscriptions, BillingProviderRegistry providers) {
+    public BillingService(SubscriptionService subscriptions, BillingProviderRegistry providers, BillingCustomerRepository customers,
+                          UserRepository users, SynapseProperties props) {
         this.subscriptions = subscriptions;
         this.providers = providers;
+        this.customers = customers;
+        this.users = users;
+        this.props = props;
     }
+
+    // ── Customers ─────────────────────────────────────────────────────────────────
+
+    /** The org's billing customer, creating the provider-side object on first use. */
+    @Transactional
+    public BillingCustomer ensureCustomer(Organization organization, UUID contactUserId, BillingProvider provider) {
+        BillingCustomer existing = customers.findByOrg(organization.id()).orElse(null);
+        if (existing != null) {
+            return existing;
+        }
+        User contact = contactUserId != null ? users.findById(contactUserId).orElse(null)
+            : organization.ownerUserId() == null ? null : users.findById(organization.ownerUserId()).orElse(null);
+        String email = contact != null ? contact.email() : organization.slug() + "@example.com";
+        String name = contact != null ? contact.displayName() : organization.name();
+        BillingCustomerRef ref = provider.createCustomer(
+            new CreateCustomerRequest(email, name, organization.id(), props.billingCurrency()));
+        return customers.insert(organization.id(), provider.name(), ref.providerCustomerId(), ref.email(), ref.name(),
+            props.billingCurrency());
+    }
+
+    // ── Checkout ──────────────────────────────────────────────────────────────────
+
+    /** Create a checkout with the provider and return its result (a URL, or manual instructions). */
+    @Transactional
+    public CheckoutResult startCheckout(Organization organization, Plan plan, String successUrl, String cancelUrl, UUID contactUserId) {
+        BillingProvider provider = providers.current();
+        BillingCustomer customer = ensureCustomer(organization, contactUserId, provider);
+        return provider.createCheckout(new CreateCheckoutRequest(plan.key(), plan.name(), plan.priceCents() == null ? 0 : plan.priceCents(),
+            plan.currency(), plan.interval() == null ? "month" : plan.interval(), customer.providerCustomerId(), successUrl, cancelUrl,
+            organization.id()));
+    }
+
+    /**
+     * Activate the subscription after checkout.
+     *
+     * <p>{@code source = webhook} is the provider telling us payment happened;
+     * {@code source = client_confirm} is the tenant telling us — trustworthy only
+     * when the provider has no payment truth of its own
+     * ({@link BillingCapability#CLIENT_CONFIRM}), else 409.
+     */
+    @Transactional
+    public Subscription completeCheckout(Organization organization, Plan plan, String providerSubscriptionId, UUID contactUserId, String source) {
+        BillingProvider provider = providers.current();
+        if (SOURCE_CLIENT_CONFIRM.equals(source) && !provider.supports().contains(BillingCapability.CLIENT_CONFIRM)) {
+            throw new CheckoutConfirmNotAllowedError(provider.name() + " verifies payment via its own callback; activation "
+                + "happens when the provider webhook arrives, not on client confirmation", Map.of("provider", provider.name()));
+        }
+        ensureCustomer(organization, contactUserId, provider);
+        return subscriptions.changePlan(organization.id(), plan.key(), provider.name(), providerSubscriptionId, false);
+    }
+
+    /** {@code null} when the provider has no portal, or the org has no provider customer yet. */
+    @Transactional
+    public String billingPortalUrl(Organization organization, String returnUrl) {
+        BillingProvider provider = providers.current();
+        if (!provider.supports().contains(BillingCapability.BILLING_PORTAL)) {
+            return null;
+        }
+        BillingCustomer customer = ensureCustomer(organization, null, provider);
+        if (customer.providerCustomerId() == null || customer.providerCustomerId().isBlank()) {
+            return null;
+        }
+        return provider.billingPortalUrl(customer.providerCustomerId(), returnUrl);
+    }
+
+    // ── Plan change ───────────────────────────────────────────────────────────────
 
     /**
      * Change the org's plan — through the provider when the provider bills.
@@ -59,9 +148,9 @@ public class BillingService {
                 throw new CheckoutRequiredError("Plan changes on " + provider.name() + " require a subscription purchased through it",
                     Map.of("plan_key", planKey, "checkout_url", CHECKOUT_URL));
             }
-            // ── MILESTONE 4 SEAM: the provider call happens BEFORE the local mutation so a failed call leaves no state behind.
-            BillingProvider.SubscriptionRef ref = provider.changePlan(current.providerSubscriptionId(),
-                new BillingProvider.ChangePlanRequest(plan.key(), plan.priceCents() == null ? 0 : plan.priceCents(), plan.currency(),
+            // The provider call happens BEFORE the local mutation so a failed call leaves no state behind.
+            SubscriptionRef ref = provider.changePlan(current.providerSubscriptionId(),
+                new ChangePlanRequest(plan.key(), plan.priceCents() == null ? 0 : plan.priceCents(), plan.currency(),
                     plan.interval() == null ? "month" : plan.interval()));
             return subscriptions.changePlan(organizationId, plan.key(), provider.name(), ref.providerSubscriptionId(), true);
         }

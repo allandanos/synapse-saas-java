@@ -64,9 +64,27 @@ synapse:
   grace-on-past-due: ${SYNAPSE_GRACE_ON_PAST_DUE:true}
   billing-currency: ${SYNAPSE_BILLING_CURRENCY:PHP}
   stripe-secret-key: ${SYNAPSE_STRIPE_SECRET_KEY:}
+  stripe-webhook-secret: ${SYNAPSE_STRIPE_WEBHOOK_SECRET:}
   paddle-secret-key: ${SYNAPSE_PADDLE_SECRET_KEY:}
+  paddle-webhook-secret: ${SYNAPSE_PADDLE_WEBHOOK_SECRET:}
   xendit-secret-key: ${SYNAPSE_XENDIT_SECRET_KEY:}
+  xendit-webhook-token: ${SYNAPSE_XENDIT_WEBHOOK_TOKEN:}
   paymongo-secret-key: ${SYNAPSE_PAYMONGO_SECRET_KEY:}
+  paymongo-webhook-secret: ${SYNAPSE_PAYMONGO_WEBHOOK_SECRET:}
+  manual-webhook-token: ${SYNAPSE_MANUAL_WEBHOOK_TOKEN:}
+  manual-pay-to-instructions: ${SYNAPSE_MANUAL_PAY_TO_INSTRUCTIONS:}
+  # Notifications: "smtp" sends through the relay when a host is set, "noop" always logs only
+  notifier: ${SYNAPSE_NOTIFIER:smtp}
+  smtp-host: ${SYNAPSE_SMTP_HOST:}
+  smtp-port: ${SYNAPSE_SMTP_PORT:1025}
+  smtp-from: ${SYNAPSE_SMTP_FROM:synapse@localhost}
+  smtp-username: ${SYNAPSE_SMTP_USERNAME:}
+  smtp-password: ${SYNAPSE_SMTP_PASSWORD:}
+  smtp-tls: ${SYNAPSE_SMTP_TLS:none}
+  # Worker: the cron jobs run in-process with the API unless this is off
+  worker-enabled: ${SYNAPSE_WORKER_ENABLED:true}
+  audit-retention-days: ${SYNAPSE_AUDIT_RETENTION_DAYS:365}
+  storage-presign-seconds: ${SYNAPSE_STORAGE_PRESIGN_SECONDS:900}
 
 logging:
   level:

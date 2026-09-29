@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
@@ -38,9 +39,29 @@ public record SynapseProperties(
     // ── Billing
     @DefaultValue("PHP") String billingCurrency,
     @DefaultValue("") String stripeSecretKey,
+    @DefaultValue("") String stripeWebhookSecret,
     @DefaultValue("") String paddleSecretKey,
+    @DefaultValue("") String paddleWebhookSecret,
     @DefaultValue("") String xenditSecretKey,
-    @DefaultValue("") String paymongoSecretKey
+    @DefaultValue("") String xenditWebhookToken,
+    @DefaultValue("") String paymongoSecretKey,
+    @DefaultValue("") String paymongoWebhookSecret,
+    @DefaultValue("") String manualWebhookToken,
+    /** Test-only: {@code synapse.provider-api-base.<name>} points a provider at a stub server. */
+    Map<String, String> providerApiBase,
+    @DefaultValue("") String manualPayToInstructions,
+    // ── Notifications (reference: notifier, smtp_*)
+    @Pattern(regexp = "smtp|noop") @DefaultValue("smtp") String notifier,
+    @DefaultValue("") String smtpHost,
+    @Min(1) @DefaultValue("1025") int smtpPort,
+    @DefaultValue("synapse@localhost") String smtpFrom,
+    @DefaultValue("") String smtpUsername,
+    @DefaultValue("") String smtpPassword,
+    @Pattern(regexp = "none|starttls|ssl") @DefaultValue("none") String smtpTls,
+    // ── Worker
+    @DefaultValue("true") boolean workerEnabled,
+    @Min(1) @DefaultValue("365") int auditRetentionDays,
+    @Min(1) @DefaultValue("900") int storagePresignSeconds
 ) {
     public static final String DEV_SECRET_PREFIX = "dev-only-";
 
@@ -49,6 +70,7 @@ public record SynapseProperties(
         if ("production".equals(env) && secretKey != null && secretKey.startsWith(DEV_SECRET_PREFIX)) {
             throw new IllegalStateException("Refusing to start in production: SYNAPSE_SECRET_KEY is the dev default");
         }
+        providerApiBase = providerApiBase == null ? Map.of() : Map.copyOf(providerApiBase);
     }
 
     public boolean isProduction() {

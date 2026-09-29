@@ -68,6 +68,22 @@
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
     </dependency>
+    <!-- Invoice PDFs: pure Java, core Helvetica fonts, no system deps (reference: fpdf2) -->
+    <dependency>
+      <groupId>com.github.librepdf</groupId>
+      <artifactId>openpdf</artifactId>
+      <version>1.3.43</version>
+      <exclusions>
+        <!-- PDF signing and BiDi shaping: not used by the invoice layout -->
+        <exclusion><groupId>com.ibm.icu</groupId><artifactId>icu4j</artifactId></exclusion>
+        <exclusion><groupId>org.bouncycastle</groupId><artifactId>bcpkix-jdk18on</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+    <!-- Notification transport (reference: notifications/smtp.py over stdlib smtplib) -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-core</artifactId>
@@ -102,6 +118,13 @@
       <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
       <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- In-process SMTP server for the notification journeys -->
+    <dependency>
+      <groupId>com.icegreen</groupId>
+      <artifactId>greenmail-junit5</artifactId>
+      <version>2.1.3</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

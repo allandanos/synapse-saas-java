@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class ProbeController {
 
+    /** A dependency the deployment deliberately does not have is not a failure. */
+    public static final String NOT_CONFIGURED = "not_configured";
+
     private final JdbcClient jdbc;
     private final SynapseProperties props;
 
@@ -33,10 +36,13 @@ public class ProbeController {
             jdbc.sql("SELECT 1").query(Integer.class).single();
             checks.put("database", "ok");
         } catch (RuntimeException e) {
-            checks.put("database", "error");
+            checks.put("database", "error: " + e.getMessage());
         }
-        boolean ok = checks.values().stream().allMatch("ok"::equals);
-        Map<String, Object> body = Map.of("status", ok ? "ok" : "degraded", "checks", checks);
+        // The port has no Redis yet (caches and the rate limiter read Postgres directly);
+        // the reference reports exactly this when SYNAPSE_REDIS_URL is unset.
+        checks.put("redis", NOT_CONFIGURED);
+        boolean ok = checks.values().stream().allMatch(value -> "ok".equals(value) || NOT_CONFIGURED.equals(value));
+        Map<String, Object> body = Map.of("status", ok ? "ok" : "error", "checks", checks);
         return ResponseEntity.status(ok ? 200 : 503).body(body);
     }
 

@@ -127,6 +127,12 @@ public class OrganizationService {
         return OrganizationRead.from(requireOrganization(organizationId));
     }
 
+    /** The row itself — billing and invoicing need the owner and the settings, not the projection. */
+    @Transactional(readOnly = true)
+    public Organization get(UUID organizationId) {
+        return requireOrganization(organizationId);
+    }
+
     @Transactional
     public OrganizationRead updateOrganization(UUID organizationId, String name, Map<String, Object> settings) {
         Organization org = requireOrganization(organizationId);

@@ -48,7 +48,10 @@ class ProbeControllerTest {
         when(jdbc.sql(anyString())).thenThrow(new RuntimeException("down"));
         mvc.perform(get("/readyz"))
             .andExpect(status().isServiceUnavailable())
-            .andExpect(jsonPath("$.checks.database").value("error"));
+            .andExpect(jsonPath("$.status").value("error"))
+            .andExpect(jsonPath("$.checks.database").value("error: down"))
+            // A dependency the deployment does not have is reported, never a failure on its own
+            .andExpect(jsonPath("$.checks.redis").value("not_configured"));
     }
 
     @Test

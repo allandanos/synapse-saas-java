@@ -9,7 +9,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.synapse.billing.BillingProvider;
 import dev.synapse.billing.BillingProviderRegistry;
 import dev.synapse.billing.BillingService;
-import dev.synapse.billing.HostedBillingProvider;
+import dev.synapse.billing.BillingCapability;
+import dev.synapse.billing.BillingCustomerRepository;
+import dev.synapse.billing.BillingRefs;
+import dev.synapse.billing.ProviderHttp;
+import dev.synapse.billing.providers.StubHostedProvider;
 import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.core.errors.CheckoutRequiredError;
 import dev.synapse.core.errors.FeatureNotEntitledError;
@@ -59,6 +63,9 @@ class BillingJourneyTest extends PostgresTestSupport {
     @Autowired ObjectMapper json;
     @Autowired JdbcClient jdbc;
     @Autowired SubscriptionService subscriptions;
+    @Autowired BillingCustomerRepository billingCustomers;
+    @Autowired dev.synapse.identity.UserRepository users;
+    @Autowired ProviderHttp providerHttp;
     @Autowired FeatureGate featureGate;
     @Autowired SynapseProperties props;
 
@@ -257,14 +264,16 @@ class BillingJourneyTest extends PostgresTestSupport {
     @Test
     void hostedProvidersRequireACheckoutUnlessTheyHoldTheSubscription() throws Exception {
         Tenant tenant = api.makeTenant("hosted");
-        BillingProviderRegistry stripe = new BillingProviderRegistry(props) {
+        StubHostedProvider hosted = new StubHostedProvider();
+        BillingProviderRegistry registry = new BillingProviderRegistry(props, providerHttp, json) {
             @Override
             public BillingProvider current() {
-                return HostedBillingProvider.STRIPE;
+                return hosted;
             }
         };
-        BillingService billing = new BillingService(subscriptions, stripe);
+        BillingService billing = new BillingService(subscriptions, registry, billingCustomers, users, props);
         UUID orgId = UUID.fromString(tenant.orgId());
+        // No subscription bought through the provider ⇒ the tenant must check out first
         assertThatThrownBy(() -> billing.changePlan(orgId, "pro")).isInstanceOf(CheckoutRequiredError.class)
             .satisfies(t -> {
                 CheckoutRequiredError e = (CheckoutRequiredError) t;
@@ -272,10 +281,17 @@ class BillingJourneyTest extends PostgresTestSupport {
                 assertThat(e.extras()).containsEntry("plan_key", "pro").containsEntry("checkout_url", "/v1/billing/checkout");
             });
         assertThat(api.get("/v1/subscription", tenant.headers()).body().at("/subscription/plan/key").asText()).isEqualTo("free");
-        jdbc.sql("UPDATE subscriptions SET provider = 'stripe', provider_subscription_id = :ref WHERE organization_id = :org")
-            .param("ref", "sub_" + ApiClient.uid()).param("org", orgId).update();
-        assertThatThrownBy(() -> billing.changePlan(orgId, "pro")).isInstanceOf(UnsupportedOperationException.class).hasMessageContaining("milestone 4");
-        assertThat(BillingProviderRegistry.locallyBilledProviderNames()).containsExactly("manual", "paddle", "xendit", "paymongo");
+
+        // With a provider subscription on the row the provider is told first, then the local state follows
+        String providerRef = "sub_" + ApiClient.uid();
+        jdbc.sql("UPDATE subscriptions SET provider = 'stub_hosted', provider_subscription_id = :ref WHERE organization_id = :org")
+            .param("ref", providerRef).param("org", orgId).update();
+        billing.changePlan(orgId, "pro");
+        assertThat(hosted.changed()).containsExactly(providerRef + ":pro");
+        assertThat(api.get("/v1/subscription", tenant.headers()).body().at("/subscription/plan/key").asText()).isEqualTo("pro");
+        assertThat(jdbc.sql("SELECT provider_subscription_id FROM subscriptions WHERE organization_id = :org")
+            .param("org", orgId).query(String.class).single()).isEqualTo(providerRef);
+        assertThat(BillingProviderRegistry.locallyBilledProviderNames()).containsExactly("manual", "xendit", "paymongo", "paddle");
     }
 
     // ── Idempotency + batches ────────────────────────────────────────────────────
