@@ -61,6 +61,23 @@ public final class Events {
     public static final String API_KEY_REVOKED = "api_key.revoked";
     public static final String API_KEY_AUTHENTICATED = "api_key.authenticated";
 
+    // Files
+    public static final String FILE_UPLOADED = "file.uploaded";
+    public static final String FILE_DELETED = "file.deleted";
+
+    // Webhooks
+    public static final String WEBHOOK_ENDPOINT_CREATED = "webhook.endpoint_created";
+    public static final String WEBHOOK_ENDPOINT_UPDATED = "webhook.endpoint_updated";
+    public static final String WEBHOOK_ENDPOINT_DELETED = "webhook.endpoint_deleted";
+    public static final String WEBHOOK_DELIVERED = "webhook.delivered";
+    public static final String WEBHOOK_DELIVERY_FAILED = "webhook.delivery_failed";
+    public static final String WEBHOOK_DELIVERY_EXHAUSTED = "webhook.delivery_exhausted";
+
+    // Agents (registry/governance only — see ADR 0007)
+    public static final String AGENT_REGISTERED = "agent.registered";
+    public static final String AGENT_UPDATED = "agent.updated";
+    public static final String AGENT_DISABLED = "agent.disabled";
+
     // Internal (in-process consumers only)
     public static final String MEMBER_INVITE_EMAIL = "member.invite_email";
     public static final String USER_PASSWORD_RESET_LINK = "user.password_reset_link";

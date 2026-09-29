@@ -11,8 +11,10 @@ import java.lang.annotation.Target;
  * to include the feature — 403 {@code feature_not_entitled} with
  * {@code feature}, {@code current_plan}, {@code available_in[]}, {@code upgrade_url} otherwise.
  * Combine with {@link RequirePermission} when the route also needs a permission.
+ * Declared on the controller class it gates every handler in it (the reference's
+ * router-level {@code dependencies=[Depends(require_feature(...))]}).
  */
-@Target(ElementType.METHOD)
+@Target({ElementType.METHOD, ElementType.TYPE})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface RequireFeature {
     String value();

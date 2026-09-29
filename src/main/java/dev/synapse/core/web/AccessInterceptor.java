@@ -37,7 +37,12 @@ public class AccessInterceptor implements HandlerInterceptor {
         }
         RequirePermission permission = method.getMethodAnnotation(RequirePermission.class);
         RequireTenant tenant = method.getMethodAnnotation(RequireTenant.class);
+        // A router-level gate (the reference's `APIRouter(dependencies=[...])`) is declared
+        // once on the controller; a method annotation still wins when both are present.
         RequireFeature feature = method.getMethodAnnotation(RequireFeature.class);
+        if (feature == null) {
+            feature = method.getBeanType().getAnnotation(RequireFeature.class);
+        }
         if (permission != null || tenant != null || feature != null) {
             Principal principal = Principals.current();
             TenantContext resolved = tenants.resolve(request, principal);
