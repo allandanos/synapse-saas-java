@@ -27,9 +27,9 @@ public class WebhookEndpointRepository {
         return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_endpoints WHERE id = :id").param("id", id).query(mapper).optional();
     }
 
-    /** Endpoints of one org, oldest first. The secret column is read but never serialised. */
+    /** Endpoints of one org, newest first. The secret column is read but never serialised. */
     public List<WebhookEndpoint> listForOrganization(UUID organizationId) {
-        return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_endpoints WHERE organization_id = :org ORDER BY created_at, id")
+        return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_endpoints WHERE organization_id = :org ORDER BY created_at DESC, id")
             .param("org", organizationId).query(mapper).list();
     }
 

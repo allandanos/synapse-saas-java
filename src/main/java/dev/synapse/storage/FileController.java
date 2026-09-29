@@ -34,6 +34,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
+import org.springframework.web.util.WebUtils;
 
 /**
  * {@code /v1/files}.
@@ -74,7 +75,9 @@ public class FileController {
         if (contentType == null || !contentType.toLowerCase().startsWith("multipart/form-data")) {
             throw new StorageError("Expected multipart/form-data upload");
         }
-        MultipartFile part = request instanceof MultipartHttpServletRequest multipart ? multipart.getFile("file") : null;
+        // Filters wrap the request, so unwrap to the resolved multipart request rather than testing `instanceof`.
+        MultipartHttpServletRequest multipart = WebUtils.getNativeRequest(request, MultipartHttpServletRequest.class);
+        MultipartFile part = multipart == null ? null : multipart.getFile("file");
         if (part == null) {
             throw new StorageError("Missing 'file' part");
         }

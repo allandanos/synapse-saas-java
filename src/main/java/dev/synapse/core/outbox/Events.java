@@ -67,7 +67,6 @@ public final class Events {
 
     // Webhooks
     public static final String WEBHOOK_ENDPOINT_CREATED = "webhook.endpoint_created";
-    public static final String WEBHOOK_ENDPOINT_UPDATED = "webhook.endpoint_updated";
     public static final String WEBHOOK_ENDPOINT_DELETED = "webhook.endpoint_deleted";
     public static final String WEBHOOK_DELIVERED = "webhook.delivered";
     public static final String WEBHOOK_DELIVERY_FAILED = "webhook.delivery_failed";

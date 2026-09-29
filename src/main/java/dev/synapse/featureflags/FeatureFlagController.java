@@ -90,10 +90,10 @@ public class FeatureFlagController {
     @PlatformAdminOnly
     @ResponseStatus(HttpStatus.CREATED)
     public OverrideRead setOverride(@PathVariable String key, @Valid @RequestBody OverrideCreate body) {
-        if (!body.hasScope()) {
-            // The reference's model validator: a scopeless override is a request error, not a 404.
+        if (!body.hasExactlyOneScope()) {
+            // The reference's model validator: an override scoped to neither — or to both — is a request error.
             throw new ValidationFailedError("Invalid request: body", Map.of("errors", List.of(
-                Map.of("loc", List.of("body"), "msg", "Value error, override requires organization_id or user_id",
+                Map.of("loc", List.of("body"), "msg", "Value error, override requires exactly one of organization_id or user_id",
                     "type", "value_error"))));
         }
         return OverrideRead.from(service.setOverride(key, body.organizationId(), body.userId(), body.enabled(), body.note()));

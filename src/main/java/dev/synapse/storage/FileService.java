@@ -1,9 +1,12 @@
 package dev.synapse.storage;
 
+import dev.synapse.core.audit.AuditService;
 import dev.synapse.core.errors.NotFoundError;
 import dev.synapse.core.errors.PresignUnsupportedError;
 import dev.synapse.core.errors.UploadIncompleteError;
 import dev.synapse.core.config.SynapseProperties;
+import dev.synapse.core.outbox.Events;
+import dev.synapse.core.outbox.OutboxWriter;
 import dev.synapse.usage.UsageService;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -37,14 +40,18 @@ public class FileService {
     private final StorageBackend storage;
     private final UsageService usage;
     private final SynapseProperties props;
+    private final AuditService audit;
+    private final OutboxWriter outbox;
     private final TransactionTemplate transactions;
 
     public FileService(StoredFileRepository files, StorageBackend storage, UsageService usage, SynapseProperties props,
-                       PlatformTransactionManager transactionManager) {
+                       AuditService audit, OutboxWriter outbox, PlatformTransactionManager transactionManager) {
         this.files = files;
         this.storage = storage;
         this.usage = usage;
         this.props = props;
+        this.audit = audit;
+        this.outbox = outbox;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -66,7 +73,9 @@ public class FileService {
         usage.adjustGauge(organizationId, STORAGE_METRIC, data.length, true); // 402 on breach
         String key = StorageKeys.scoped(organizationId, name);
         storage.put(key, data, type);
-        return files.insert(organizationId, key, name, type, data.length, StoredFile.READY, userId);
+        StoredFile row = files.insert(organizationId, key, name, type, data.length, StoredFile.READY, userId);
+        announce(Events.FILE_UPLOADED, row);
+        return row;
     }
 
     /**
@@ -108,7 +117,11 @@ public class FileService {
             extras.put("actual_bytes", actual);
             throw new UploadIncompleteError("Object missing or size mismatch; request a new presigned upload", extras);
         }
-        return transactions.execute(tx -> files.markReady(row.id(), organizationId));
+        return transactions.execute(tx -> {
+            StoredFile ready = files.markReady(row.id(), organizationId);
+            announce(Events.FILE_UPLOADED, ready);
+            return ready;
+        });
     }
 
     @Transactional(readOnly = true)
@@ -133,6 +146,18 @@ public class FileService {
         files.softDelete(row.id(), organizationId, Instant.now());
         storage.delete(row.key());
         usage.adjustGauge(organizationId, STORAGE_METRIC, -row.sizeBytes(), false);
+        announce(Events.FILE_DELETED, row);
+    }
+
+    /** One event through the outbox and one audit row, both inside the caller's transaction. */
+    private void announce(String eventType, StoredFile row) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("file_id", row.id().toString());
+        payload.put("name", row.name());
+        payload.put("content_type", row.contentType());
+        payload.put("size_bytes", row.sizeBytes());
+        outbox.append(eventType, "file", row.id(), row.organizationId(), payload);
+        audit.log(eventType, row.organizationId(), null, "file", row.id(), payload);
     }
 
     private void requirePresignSupport(String message, Map<String, Object> extras) {

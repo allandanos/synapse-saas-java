@@ -3,10 +3,13 @@ package dev.synapse.webhooks;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.synapse.billing.Signatures;
+import dev.synapse.core.audit.AuditService;
 import dev.synapse.core.errors.WebhookDeliveryNotFoundError;
 import dev.synapse.core.errors.WebhookEndpointNotFoundError;
 import dev.synapse.core.ids.Secrets;
 import dev.synapse.core.metrics.FrameworkMetrics;
+import dev.synapse.core.outbox.Events;
+import dev.synapse.core.outbox.OutboxWriter;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -50,21 +53,27 @@ public class WebhookDeliveryService {
     private final FernetCodec fernet;
     private final ObjectMapper json;
     private final FrameworkMetrics metrics;
+    private final AuditService audit;
+    private final OutboxWriter outbox;
     private final HttpClient http;
 
     @org.springframework.beans.factory.annotation.Autowired
     public WebhookDeliveryService(WebhookDeliveryRepository deliveries, WebhookEndpointRepository endpoints, FernetCodec fernet,
-                                  ObjectMapper json, FrameworkMetrics metrics) {
-        this(deliveries, endpoints, fernet, json, metrics, HttpClient.newBuilder().connectTimeout(DELIVERY_TIMEOUT).build());
+                                  ObjectMapper json, FrameworkMetrics metrics, AuditService audit, OutboxWriter outbox) {
+        this(deliveries, endpoints, fernet, json, metrics, audit, outbox,
+            HttpClient.newBuilder().connectTimeout(DELIVERY_TIMEOUT).build());
     }
 
     public WebhookDeliveryService(WebhookDeliveryRepository deliveries, WebhookEndpointRepository endpoints, FernetCodec fernet,
-                                  ObjectMapper json, FrameworkMetrics metrics, HttpClient http) {
+                                  ObjectMapper json, FrameworkMetrics metrics, AuditService audit, OutboxWriter outbox,
+                                  HttpClient http) {
         this.deliveries = deliveries;
         this.endpoints = endpoints;
         this.fernet = fernet;
         this.json = json;
         this.metrics = metrics;
+        this.audit = audit;
+        this.outbox = outbox;
         this.http = http;
     }
 
@@ -73,7 +82,18 @@ public class WebhookDeliveryService {
     public Created createEndpoint(UUID organizationId, String url, List<String> events, String description) {
         String secret = "whsec_" + Secrets.urlsafeToken(24);
         UUID id = endpoints.insert(organizationId, url, fernet.encrypt(secret), description, events);
+        announce(Events.WEBHOOK_ENDPOINT_CREATED, organizationId, id, url, events);
         return new Created(id, secret);
+    }
+
+    /** The event and the audit row both carry the endpoint, never the secret. */
+    private void announce(String eventType, UUID organizationId, UUID endpointId, String url, List<String> events) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("endpoint_id", endpointId.toString());
+        payload.put("url", url);
+        payload.put("events", List.copyOf(events));
+        outbox.append(eventType, "webhook_endpoint", endpointId, organizationId, payload);
+        audit.log(eventType, organizationId, null, "webhook_endpoint", endpointId, payload);
     }
 
     public record Created(UUID endpointId, String secret) {}
@@ -95,6 +115,7 @@ public class WebhookDeliveryService {
     public void deleteEndpoint(UUID endpointId, UUID organizationId) {
         WebhookEndpoint endpoint = getEndpoint(endpointId, organizationId);
         endpoints.delete(endpoint.id()); // deliveries cascade with the endpoint
+        announce(Events.WEBHOOK_ENDPOINT_DELETED, organizationId, endpoint.id(), endpoint.url(), endpoint.events());
     }
 
     @Transactional(readOnly = true)
