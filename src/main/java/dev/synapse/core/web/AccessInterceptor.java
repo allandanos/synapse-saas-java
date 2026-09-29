@@ -19,11 +19,13 @@ public class AccessInterceptor implements HandlerInterceptor {
     private final TenantAccess tenants;
     private final PermissionChecks permissions;
     private final FeatureChecks features;
+    private final FlagChecks flags;
 
-    public AccessInterceptor(TenantAccess tenants, PermissionChecks permissions, FeatureChecks features) {
+    public AccessInterceptor(TenantAccess tenants, PermissionChecks permissions, FeatureChecks features, FlagChecks flags) {
         this.tenants = tenants;
         this.permissions = permissions;
         this.features = features;
+        this.flags = flags;
     }
 
     @Override
@@ -43,7 +45,11 @@ public class AccessInterceptor implements HandlerInterceptor {
         if (feature == null) {
             feature = method.getBeanType().getAnnotation(RequireFeature.class);
         }
-        if (permission != null || tenant != null || feature != null) {
+        RequireFlag flag = method.getMethodAnnotation(RequireFlag.class);
+        if (flag == null) {
+            flag = method.getBeanType().getAnnotation(RequireFlag.class);
+        }
+        if (permission != null || tenant != null || feature != null || flag != null) {
             Principal principal = Principals.current();
             TenantContext resolved = tenants.resolve(request, principal);
             if (permission != null) {
@@ -51,6 +57,9 @@ public class AccessInterceptor implements HandlerInterceptor {
             }
             if (feature != null) {
                 features.require(resolved.organizationId(), feature.value());
+            }
+            if (flag != null) {
+                flags.require(flag.value(), resolved.organizationId(), principal.id());
             }
         }
         return true;
