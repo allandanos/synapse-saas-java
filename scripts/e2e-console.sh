@@ -45,7 +45,11 @@ REDIS_URL="${REDIS_URL:-redis://localhost:6390/0}"
 KEYCLOAK="${KEYCLOAK:-0}"
 KEYCLOAK_NAME="${KEYCLOAK_NAME:-keycloak-java}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
-KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
+# 22.0, not the 26.0 the reference's nightly workflow pins: Keycloak >= 23's login
+# theme adds a "Show password" button whose aria-label ALSO matches the spec's
+# getByLabel(/password/i), so sso.spec.ts:20 fails Playwright's strict mode. The
+# spec is never modified, so the recipe picks the last theme it can drive.
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:22.0}"
 KEYCLOAK_REALM_DIR="${KEYCLOAK_REALM_DIR:-${TMPDIR:-/tmp}/synapse-keycloak-java}"
 RESET_DB="${RESET_DB:-1}"
 KEEP_STACK="${KEEP_STACK:-0}"
@@ -129,6 +133,7 @@ if [ "$KEYCLOAK" = "1" ]; then
     "$KEYCLOAK_REALM_DIR/realm-dev.json" "http://localhost:$API_PORT" "http://localhost:$CONSOLE_PORT"
   docker rm -f "$KEYCLOAK_NAME" >/dev/null 2>&1 || true
   docker run -d --name "$KEYCLOAK_NAME" -p "$KEYCLOAK_PORT:8080" \
+    -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
     -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
     -v "$KEYCLOAK_REALM_DIR:/opt/keycloak/data/import:ro" \
     "$KEYCLOAK_IMAGE" start-dev --import-realm --http-port=8080 >/dev/null

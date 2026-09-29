@@ -19,25 +19,22 @@ that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entr
 | 4 | billing providers, invoicing, notifications, worker | **done** — five providers behind one capability table (manual, Stripe, Paddle, Xendit, PayMongo) with real HTTP clients and webhook verification, checkout/confirm/portal, framework-native invoicing (draft → finalize → pay/void, overage + proration lines, PDFs), spend/revenue reports, signed provider-webhook ingest with an idempotency ledger, the outbox dispatcher + signed outbound deliveries (Fernet-encrypted endpoint secrets), SMTP notifications, and the seven cron jobs in-process or standalone. `test_billing` passes |
 | 5 | webhooks, files, flags, audit, agents | **done** — webhook endpoint management + the delivery log + retry over the milestone-4 engine, org-scoped files on local disk or any S3-compatible bucket (direct multipart, presigned PUT/GET, the `storage_bytes` gauge both ways), feature flags with deterministic percentage rollouts and org/user overrides, the audit read route, and the agent registry behind the `agents` entitlement. **The entire `tests/conformance` suite passes** |
 | 6 | console parity (Playwright) | **done** — the reference's Next.js console, unmodified, built against this server: all five journey files pass (**22 passed, 1 skipped** — `sso.spec.ts` self-skips until milestone 7). Dev seed (`--seed-dev`), the reference's MIME bytes on outbound mail, `make e2e` |
-| 7 | OIDC + OpenFGA, hardening | — |
+| 7 | OIDC login, OpenFGA, Redis caches, auth rate limiting, Stripe plan sync | **done** — version-counter caches over Redis with post-commit invalidation, the two-bucket auth rate limiter, the catalog-generated OpenFGA model behind `AuthorizationService` with outbox-driven tuple sync, Keycloak SSO (authorization code + PKCE), and `--plans-sync --stripe`. The whole conformance suite passes in **both** authorization backends; the console journeys are **23 passed, 0 skipped** (`make e2e-sso`) |
 
 A milestone is done when the corresponding `tests/conformance` modules pass
 against this server. `make conformance` runs the **whole** suite — as of
-milestone 5 every module passes, with nothing deselected. Milestone 6 adds a
-second gate: the reference's own console, unmodified, driven by its Playwright
-journeys (`make e2e` — see [Console parity](#console-parity)).
+milestone 5 every module passes, with nothing deselected, and as of milestone 7
+it passes with `SYNAPSE_AUTHZ_BACKEND` set to either `rbac` or `openfga`.
+Milestone 6 adds a second gate: the reference's own console, unmodified, driven
+by its Playwright journeys (`make e2e` / `make e2e-sso` — see
+[Console parity](#console-parity)).
 
-### Deliberately left for later milestones
+### Deliberately left for later
 
-- Redis-backed permission/membership/entitlement caches and the auth rate
-  limiter (`core/cache`, `core/rate_limit`): every check reads Postgres
-  directly; `EntitlementCache` is the drop-in seam. `/readyz` reports
-  `redis: not_configured`, exactly as the reference does when the URL is unset.
-- The OpenFGA tuple-sync consumer the outbox dispatcher leaves room for
-  (milestone 7), and Stripe plan sync from the CLI
-  (`StripeBillingProvider.upsertProductAndPrice` exists, nothing calls it yet).
-- OIDC login and OpenFGA (milestone 7). SSO-only users get the reference's
-  401 `sso_url` problem from `/v1/auth/login`, but `/v1/auth/oidc/*` does not exist yet.
+- Nothing from the contract. The remaining gaps are operational: no
+  OpenTelemetry exporter, and the `project` type in the OpenFGA model is the
+  template a domain app extends rather than a resource this framework owns
+  (the framework has no `projects` table — ADR 0009 says the same).
 
 ## Stack
 
@@ -228,6 +225,17 @@ Same names and defaults as the reference wherever the concept exists
 | `SYNAPSE_NOTIFIER` | `smtp` | `noop` logs instead of sending |
 | `SYNAPSE_SMTP_HOST` / `_PORT` / `_FROM` / `_USERNAME` / `_PASSWORD` | unset / `1025` / `synapse@localhost` / unset | empty host ⇒ every send is logged and dropped |
 | `SYNAPSE_SMTP_TLS` | `none` | `none` \| `starttls` \| `ssl`; AUTH over a plaintext channel is refused |
+| `SYNAPSE_REDIS_URL` | unset | versioned caches, the auth rate limiter and the OIDC login state. Unset ⇒ per-process (single instance only) and `/readyz` says `redis: not_configured`. The reference defaults this to its own dev stack (`redis://localhost:6380/0`); the port ships it empty so nothing reaches for a Redis that may not be there |
+| `SYNAPSE_AUTH_RATE_LIMIT_PER_IP` | `20` | attempts per window per client IP on the seven credential routes; production refuses to boot above 100 |
+| `SYNAPSE_AUTH_RATE_LIMIT_PER_IDENTITY` | `5` | attempts per window per target email; production refuses to boot above 20 |
+| `SYNAPSE_AUTH_RATE_WINDOW_SECONDS` | `60` | the fixed window both counters use |
+| `SYNAPSE_TRUSTED_PROXIES` | empty | CIDR list (CSV or JSON). `X-Forwarded-For` is believed only when the socket peer is inside one of these, and then only back to the first untrusted hop. Garbage refuses to boot |
+| `SYNAPSE_AUTHZ_BACKEND` | `rbac` | `openfga` sends every permission decision to the store (ADR 0009) |
+| `SYNAPSE_OPENFGA_URL` / `_STORE_ID` / `_MODEL_ID` / `_API_TOKEN` | unset | empty model id ⇒ the store's latest |
+| `SYNAPSE_OPENFGA_FAIL_MODE` | `closed` | store unreachable ⇒ deny; `rbac` falls back for organization objects only |
+| `SYNAPSE_KEYCLOAK_BASE_URL` / `_REALM` / `_CLIENT_ID` / `_CLIENT_SECRET` | unset | required when `SYNAPSE_IDENTITY_PROVIDER=keycloak` |
+| `SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT` | `false` | opts into the resource-owner password grant; the code flow is the default |
+| `SYNAPSE_OIDC_REDIRECT_URI` | unset | overrides the callback URL sent to the IdP (behind a proxy that rewrites the host) |
 
 ### Tests
 
@@ -300,6 +308,115 @@ docker run -d --name minio -p 9010:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_P
 SYNAPSE_TEST_S3_ENDPOINT=http://localhost:9010 SYNAPSE_TEST_JDBC_URL=jdbc:postgresql://[::1]:5434/synapse_java_test mvn test
 ```
 
+## Hardening
+
+Milestone 7: the four things that turn the framework from "correct" into
+"survives a Tuesday" — a shared cache, a credential rate limiter, a
+fine-grained authorization backend, and single sign-on.
+
+### Versioned caches
+
+`dev.synapse.core.cache` is the reference's `core/cache.py`. A cached body
+lives under `{ns}:v{version}:{key}`; the version comes from a counter at
+`{ns}:ver:{key}`. Mutations increment the counter, readers read the (tiny)
+counter first and only fetch a body for a version they have not invalidated.
+No key scanning, no delete storms, no cross-tenant blast radius.
+
+Three rules, each of which closed a real bug in the reference:
+
+1. `set` writes under the version observed at **read** time. A bump in between
+   must leave the new version empty, not fill it with the stale body.
+2. `delete` is a bump, never a reset — resetting to 0 resurrects whatever was
+   cached under version 0.
+3. Invalidation runs **after commit**. `DeferredBumps` queues the bump on the
+   transaction and flushes it in `afterCommit`; bumping inside the transaction
+   lets a concurrent reader recompute from pre-commit rows and cache them under
+   the *new* version, stale for a whole TTL. A rollback drops the queue.
+
+| Namespace | TTL | Holds | Bumped by |
+|---|---|---|---|
+| `perm` | 30 s | a member's effective permission keys | any role/membership write |
+| `fga` | 30 s | one OpenFGA decision, scoped `{user}:{object}` | the same writes, and the tuple sync |
+| `entl` | 60 s | an org's effective entitlements | subscription and grant changes |
+| `fflags` | 30 s | one flag evaluation, scoped (global, org, user) | flag edits and overrides |
+| `oidc` | 600 s | one pending SSO login (PKCE verifier, nonce, `return_to`) | consumed on callback |
+
+Redis (Lettuce) when `SYNAPSE_REDIS_URL` is set, a per-process TTL map
+otherwise — the same degradation the reference documents. A Redis read or
+write that fails is logged and treated as a miss; it never becomes a 500. Only
+`/readyz` surfaces the error, as `checks.redis = error: …`.
+
+### Auth rate limiting
+
+`AuthRateLimitFilter` runs ahead of the security chain and counts a fixed
+window on the seven credential routes — `/v1/auth/login`, `/register`,
+`/forgot-password` (per IP **and** per target email), `/reset-password`,
+`/refresh`, `/oidc/start`, `/oidc/callback` (per IP). The identity is peeked
+out of the JSON body through a buffering request wrapper, so the handler still
+reads the bytes. Tripping either bucket answers the `rate_limited` problem
+document with `Retry-After`; a backend failure **fails open** (logged, counted
+as `synapse_auth_events_total{event="limiter_degraded"}`) because losing Redis
+must cost the distributed counter, never availability.
+
+`X-Forwarded-For` is believed only when the socket peer is inside
+`SYNAPSE_TRUSTED_PROXIES`, and then only back to the first hop that is not
+itself a trusted proxy — walking right to left, since each proxy appends the
+peer it saw. With no trusted proxies the header is ignored outright.
+
+### OpenFGA (ADR 0009)
+
+RBAC stays the source of truth for what a role means. `FgaModel` projects the
+permission catalog into an OpenFGA model so the two cannot drift: one relation
+per system role, one `can_<perm>` relation per catalog permission defined as
+`[user] or <every role holding it>`, plus the `project` viewer/editor template
+domain apps copy. A unit test asserts the rendered DSL byte-for-byte against
+the reference's `render_dsl()`.
+
+```bash
+docker run -d --name openfga -p 8081:8080 openfga/openfga run   # or the reference's compose profile
+make authz-fga-write-model STORE=synapse            # prints store_id + authorization_model_id
+make authz-fga-write-model DSL=--dsl                # just print the model as DSL
+make authz-fga-sync STORE_ID=… MODEL_ID=…           # backfill every membership's tuples
+make authz-fga-check STORE_ID=… CHECK=<user>,<org>,org:delete
+make run-openfga STORE_ID=… MODEL_ID=…              # serve with SYNAPSE_AUTHZ_BACKEND=openfga
+```
+
+With the `openfga` backend every `require_permission` decision becomes
+`check(user:<id>, can_<perm>, organization:<id>)`, cached 30 s per
+(user, object) and invalidated with the permission cache.
+`user_can_on(user, perm, "project", id)` answers resource-level questions the
+RBAC backend cannot. **API-key principals never consult the store**: they
+authorise against their scopes intersected with their creator's live RBAC set,
+exactly as before. On an outage `SYNAPSE_OPENFGA_FAIL_MODE` decides — `closed`
+denies and counts `synapse_fga_checks_total{outcome="error"}`, `rbac` falls
+back for organization objects only. An outage is never cached.
+
+Tuples are synced from RBAC, never authored by hand: every membership or role
+change appends the internal `authz.tuples_changed` outbox event, and the
+worker's post-commit consumer diffs the member's desired tuples against the
+store. A member holding only system roles gets one tuple per role; a
+permission that only a custom role grants becomes a direct `can_<perm>` tuple.
+
+### OIDC login (ADR 0010)
+
+`SYNAPSE_IDENTITY_PROVIDER=keycloak` turns on the authorization-code flow with
+PKCE. `/v1/auth/oidc/start` keeps the verifier, nonce and sanitised
+`return_to` server-side under an opaque single-use state; `/v1/auth/oidc/callback`
+exchanges the code, verifies the id_token's RS256 signature against the realm
+JWKS (cached an hour, refetched once on an unknown `kid`), its issuer,
+audience, expiry and nonce, then links the user by `(provider, subject)`, else
+by a **verified** email, else creates an SSO-only account. An existing account
+whose email the IdP has not verified is refused, not merged.
+
+The browser never sees a token in a URL: the callback sets the `synapse_rt`
+cookie and redirects to `{web_origin}/auth/callback?return_to=…`, and the
+console mints an access token through `/v1/auth/refresh`. `/v1/meta` reports
+`identity_provider`, which is what makes the console show its SSO button.
+
+```bash
+make e2e-sso   # boots Keycloak on :8180 with the dev realm and runs all 23 journeys
+```
+
 ## Console parity
 
 The reference's console (`synapse-saas/apps/web`) and its Playwright journeys
@@ -307,7 +424,8 @@ are the second acceptance suite: they are **never modified**, they are copied
 out of the reference repo and built with `NEXT_PUBLIC_API_URL` pointing here.
 
 ```bash
-make e2e     # ⇒ 22 passed, 1 skipped
+make e2e       # ⇒ 22 passed, 1 skipped  (sso.spec.ts self-skips without E2E_KEYCLOAK)
+make e2e-sso   # ⇒ 23 passed, 0 skipped  (KEYCLOAK=1: a real Keycloak on :8180)
 ```
 
 `scripts/e2e-console.sh` is the whole recipe: package the jar, start MailHog,
@@ -316,8 +434,24 @@ the console's origin as `SYNAPSE_WEB_ORIGIN`, copy + `pnpm build` + `pnpm start`
 the console, run `playwright test`, tear everything down. Every port is an
 environment variable so two ports can run side by side on one machine —
 `CONSOLE_DIR`, `CONSOLE_PORT` (3300), `API_PORT` (8080), `JDBC_URL`,
-`MAILHOG_NAME`/`MAILHOG_SMTP` (1035)/`MAILHOG_HTTP` (8035), `RESET_DB`,
-`KEEP_STACK`, `SPECS` (e.g. `SPECS=auth.spec.ts make e2e`).
+`MAILHOG_NAME`/`MAILHOG_SMTP` (1035)/`MAILHOG_HTTP` (8035), `REDIS_URL`
+(6390), `KEYCLOAK_NAME`/`KEYCLOAK_PORT` (8180), `RESET_DB`, `KEEP_STACK`,
+`SPECS` (e.g. `SPECS=auth.spec.ts make e2e`).
+
+`KEYCLOAK=1` adds one step: `scripts/keycloak-realm.py` copies the reference's
+`infrastructure/keycloak/realm-dev.json` (never edits it) and appends this
+port's API and console origins to the `synapse-web` client's redirect URIs —
+the shipped realm only knows 8000 and 3000 — then imports the copy into a
+throwaway container that the teardown removes. The recipe also exports
+`SYNAPSE_REDIS_URL` and raises the auth rate limits to 1000/IP and
+100/identity, the same values the reference's own e2e workflows use: the
+journeys register dozens of users from one address.
+
+The container runs `quay.io/keycloak/keycloak:22.0`, not the 26.0 the
+reference's nightly workflow pins. Keycloak 23 added a "Show password" button
+to the login theme whose `aria-label` also matches `sso.spec.ts:20`'s
+`getByLabel(/password/i)`, so the spec — which is never modified — fails
+Playwright's strict mode on anything newer. `KEYCLOAK_IMAGE=…` overrides it.
 
 What the console needs from the server, beyond the conformance contract:
 
@@ -440,5 +574,41 @@ Behaviour a client can distinguish, kept deliberately:
   reference's 400 `storage_error` rather than a 413: the 10 MiB rule is
   enforced in code, and `MaxUploadSizeExceededException` is mapped to the same
   problem so the answer never depends on which layer noticed first.
+- With `SYNAPSE_AUTHZ_BACKEND=openfga`, tuples converge once **right after the
+  mutating transaction commits**, in addition to the outbox event the worker
+  consumes. The reference converges only through the worker, which leaves the
+  member who just gained a role denied for the dispatch interval plus the 30 s
+  decision cache; that window is long enough for the acceptance suite to fail
+  in `openfga` mode. The event is still written and still consumed, so
+  durability, retries and dead-lettering are unchanged and the worker's pass
+  finds an empty diff.
+- `SYNAPSE_REDIS_URL` defaults to empty here; the reference defaults it to its
+  own dev stack (`redis://localhost:6380/0`). Both degrade identically when no
+  Redis answers.
+
+### Reference behaviour mirrored despite looking wrong
+
+Reported rather than fixed (ADR 0012: the reference server is the oracle):
+
+- `authorization/fga.py:115` tolerates a missing delete only when the body
+  contains `"not found"`, but OpenFGA 1.x answers `cannot delete a tuple which
+  does not exist`. The reference would therefore raise — and dead-letter the
+  event — on a delete that raced. The port accepts both wordings, which can
+  only turn an error into a no-op.
+- `tenancy/dependencies.py:29` declares `_membership_cache =
+  VersionedCache("member", ttl=60)` and never reads or writes it. The port
+  does not carry the dead namespace.
+- `apps/web/e2e/sso.spec.ts:20` uses `getByLabel(/password/i)`, which on
+  Keycloak >= 23 resolves to both the password input and the theme's new
+  "Show password" toggle — a Playwright strict-mode violation. The reference's
+  own `.github/workflows/e2e-sso.yml:63` pins `keycloak:26.0`, so that nightly
+  job cannot be passing either. The recipe here runs 22.0 instead of touching
+  the spec.
+- `identity/provider.py` documents `verify_credentials` as "email+password
+  proxied to Keycloak", but `identity/service.py:login` never asks the
+  identity provider — only `oidc_start`/`oidc_callback` call
+  `get_identity_provider()`. The port keeps the same seam (and the same
+  `SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT` switch) with the same effect: the
+  password grant is reachable from the provider, not from `/v1/auth/login`.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.

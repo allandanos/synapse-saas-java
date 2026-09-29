@@ -45,9 +45,6 @@ public class Application {
         if (oneShot) {
             properties.put("synapse.worker-enabled", "false");
         }
-        if (Arrays.stream(AUTHZ_FGA_OPTIONS).anyMatch(option -> has(args, option))) {
-            properties.put("synapse.auto-sync-plans", "false"); // the store commands touch no catalog
-        }
         return properties;
     }
 

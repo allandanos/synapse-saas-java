@@ -10,6 +10,7 @@ import dev.synapse.authorization.PermissionDef;
 import dev.synapse.authorization.fga.FgaClient;
 import dev.synapse.authorization.fga.FgaModel;
 import dev.synapse.authorization.fga.FgaTuple;
+import dev.synapse.authorization.fga.TupleSync;
 import dev.synapse.core.cache.Caches;
 import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.support.ApiClient;
@@ -101,6 +102,7 @@ class OpenFgaParityJourneyTest extends PostgresTestSupport {
     @Autowired JdbcClient jdbc;
     @Autowired Caches caches;
     @Autowired OutboxDispatchJob outbox;
+    @Autowired TupleSync tupleSync;
 
     ApiClient api;
     FgaClient store;
@@ -177,14 +179,29 @@ class OpenFgaParityJourneyTest extends PostgresTestSupport {
     @Test
     void aRouteIsGatedByTheStoreAndTheSyncConverges() throws Exception {
         Tenant owner = api.makeTenant("fga-owner");
+        String ownerUser = "user:" + owner.userId();
+        String orgObject = "organization:" + owner.orgId();
 
-        // Nothing synced yet ⇒ closed: even the owner is denied
+        // Creating the org converged the owner's tuples right after the commit,
+        // so the very next request is already answered by the store.
+        assertThat(store.check(ownerUser, "owner", orgObject)).isTrue();
+        assertThat(api.get("/v1/orgs/current/members", owner.headers()).status()).isEqualTo(200);
+
+        // The worker's pass over the same authz.tuples_changed event finds an empty diff
+        outbox.runOnce();
+        assertThat(store.readTuples(orgObject).stream().filter(t -> t.user().equals(ownerUser)).toList())
+            .containsExactly(new FgaTuple(ownerUser, "owner", orgObject));
+
+        // Take the tuples away behind the API's back: `closed` denies, RBAC notwithstanding
+        store.write(List.of(), List.of(new FgaTuple(ownerUser, "owner", orgObject)));
+        forgetDecisions(owner.userId(), owner.orgId());
         assertThat(api.get("/v1/orgs/current/members", owner.headers()).status()).isEqualTo(403);
 
-        // The worker drains the authz.tuples_changed events the org creation queued
-        outbox.runOnce();
+        // `authz fga sync` repairs it (what the CLI does for a whole org)
+        outbox.runOnce(); // nothing queued: the repair is the sync's job, not the outbox's
+        assertThat(api.get("/v1/orgs/current/members", owner.headers()).status()).isEqualTo(403);
+        tupleSync.apply(Map.of("organization_id", owner.orgId(), "user_id", owner.userId()));
         forgetDecisions(owner.userId(), owner.orgId());
-        assertThat(store.check("user:" + owner.userId(), "owner", "organization:" + owner.orgId())).isTrue();
         assertThat(api.get("/v1/orgs/current/members", owner.headers()).status()).isEqualTo(200);
 
         // A member joins as `member`; the store says so and nothing more
