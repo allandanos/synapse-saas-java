@@ -76,11 +76,11 @@ class DevSeedJourneyTest extends PostgresTestSupport {
         assertThat(entitlements.status()).isEqualTo(200);
         assertThat(entitlements.body().get("plan_key").asText()).isEqualTo("free");
 
-        // Seat gauge counts the five demo members (the console's members page reads the same list).
+        // The console's members page reads {data, meta} from this route; all five demo users are active.
         Res members = api.get("/v1/orgs/current/members", headers);
         assertThat(members.status()).isEqualTo(200);
-        assertThat(members.body().size()).isEqualTo(DevSeeder.ROLE_KEYS.size());
-        assertThat(members.header("X-Total-Count")).isEqualTo(String.valueOf(DevSeeder.ROLE_KEYS.size()));
+        assertThat(members.body().get("data")).hasSize(DevSeeder.ROLE_KEYS.size());
+        assertThat(members.body().get("meta").get("total").asInt()).isEqualTo(DevSeeder.ROLE_KEYS.size());
     }
 
     @Test
