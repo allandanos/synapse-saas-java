@@ -82,6 +82,7 @@ class WorkerJourneyTest extends PostgresTestSupport {
     @Autowired WebhookDeliveryService webhooks;
     @Autowired TransactionTemplate transaction;
     @MockitoSpyBean WebhookDeliveryRepository deliveries;
+    @Autowired dev.synapse.notifications.NotificationHandlers notifications;
 
     ApiClient api;
 
@@ -297,11 +298,6 @@ class WorkerJourneyTest extends PostgresTestSupport {
     @Test
     void theInviteResetAndInvoiceEmailsAreSentAfterTheOutboxCommits() throws Exception {
         Tenant tenant = api.makeTenant("emails");
-        // A framework-drafted invoice has no provider customer, so the billing contact
-        // comes from the org's settings — the reference's second recipient hop.
-        String billingEmail = "billing-" + ApiClient.uid() + "@conformance.example.com";
-        assertThat(api.patch("/v1/orgs/current", tenant.headers(),
-            Map.of("settings", Map.of("billing_email", billingEmail))).status()).isEqualTo(200);
         String memberEmail = "member-" + ApiClient.uid() + "@conformance.example.com";
         assertThat(api.post("/v1/orgs/current/members/invite", tenant.headers(), Map.of("email", memberEmail)).status()).isEqualTo(201);
         assertThat(api.post("/v1/auth/forgot-password", Map.of(), Map.of("email", tenant.email())).status()).isEqualTo(202);
@@ -309,6 +305,19 @@ class WorkerJourneyTest extends PostgresTestSupport {
         String invoiceId = api.post("/v1/billing/invoices/draft", tenant.headers(), Map.of()).text("id");
         Res finalized = api.post("/v1/billing/invoices/" + invoiceId + "/finalize", tenant.headers(), null);
         assertThat(finalized.status()).isEqualTo(200);
+
+        // A framework-drafted invoice carries no billing customer, so the recipient comes from
+        // the org chain: billing customer → settings.billing_email → owner. Clear the customer
+        // manual checkout created and the settings, and the owner must still get the mail.
+        String billingEmail = "billing-" + ApiClient.uid() + "@conformance.example.com";
+        assertThat(notifications.billingRecipient(UUID.fromString(tenant.orgId()))).isEqualTo(tenant.email());
+        jdbc.sql("DELETE FROM billing_customers WHERE organization_id = :org")
+            .param("org", UUID.fromString(tenant.orgId())).update();
+        assertThat(api.patch("/v1/orgs/current", tenant.headers(),
+            Map.of("settings", Map.of("billing_email", billingEmail))).status()).isEqualTo(200);
+        assertThat(notifications.billingRecipient(UUID.fromString(tenant.orgId()))).isEqualTo(billingEmail);
+        jdbc.sql("UPDATE organizations SET settings = '{}'::jsonb WHERE id = :org")
+            .param("org", UUID.fromString(tenant.orgId())).update();
 
         // Nothing is sent until the events are durably published
         assertThat(smtp.getReceivedMessages()).isEmpty();
@@ -324,7 +333,7 @@ class WorkerJourneyTest extends PostgresTestSupport {
         assertThat(body(reset)).contains("/login?reset=").contains("30 minutes");
 
         MimeMessage invoice = messageWithSubjectContaining("Invoice " + finalized.text("number"));
-        assertThat(invoice.getAllRecipients()[0].toString()).isEqualTo(billingEmail);
+        assertThat(invoice.getAllRecipients()[0].toString()).as("the chain falls through to the org owner").isEqualTo(tenant.email());
         assertThat(invoice.getSubject()).contains("due");
         assertThat(invoice.getContent()).isInstanceOf(MimeMultipart.class);
         MimeMultipart parts = (MimeMultipart) invoice.getContent();
