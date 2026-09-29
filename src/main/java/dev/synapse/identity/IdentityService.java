@@ -17,6 +17,7 @@ import dev.synapse.identity.dto.OrgSummary;
 import dev.synapse.identity.dto.TokenPair;
 import dev.synapse.identity.dto.UserRead;
 import dev.synapse.identity.dto.UserWithOrgs;
+import dev.synapse.identity.oidc.KeycloakOidcProvider;
 import dev.synapse.tenancy.MembershipRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -57,11 +58,13 @@ public class IdentityService {
     private final AuditService audit;
     private final OutboxWriter outbox;
     private final SynapseProperties props;
+    private final KeycloakOidcProvider keycloak;
     private final TransactionTemplate requiresNew;
 
     public IdentityService(UserRepository users, RefreshTokenRepository refreshTokens, PasswordResetTokenRepository resetTokens,
                            MembershipRepository memberships, PasswordHasher hasher, JwtCodec jwt, AuditService audit,
-                           OutboxWriter outbox, SynapseProperties props, PlatformTransactionManager txManager) {
+                           OutboxWriter outbox, SynapseProperties props, KeycloakOidcProvider keycloak,
+                           PlatformTransactionManager txManager) {
         this.users = users;
         this.refreshTokens = refreshTokens;
         this.resetTokens = resetTokens;
@@ -71,6 +74,7 @@ public class IdentityService {
         this.audit = audit;
         this.outbox = outbox;
         this.props = props;
+        this.keycloak = keycloak;
         this.requiresNew = new TransactionTemplate(txManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -92,7 +96,15 @@ public class IdentityService {
     public AuthResponse login(String rawEmail, String password, String userAgent, String ip) {
         String email = Emails.normalize(rawEmail);
         User user = users.findByEmail(email).orElse(null);
-        if (user != null && !"local".equals(user.identityProvider()) && user.passwordHash() == null) {
+        boolean ssoOnly = user != null && !"local".equals(user.identityProvider()) && user.passwordHash() == null;
+        if (props.keycloakIdentity() && props.keycloakAllowPasswordGrant() && (user == null || ssoOnly)) {
+            // Opt-in ROPC (ADR 0010): the password form proxies to Keycloak, which
+            // links or creates the account; the code flow stays the default.
+            User signedIn = loginViaPasswordGrant(email, password);
+            return new AuthResponse(UserRead.from(signedIn), issueTokens(signedIn, null, userAgent, ip));
+        }
+        if (ssoOnly) {
+            // SSO-only account: the password form cannot sign it in — point at the flow that can
             hasher.verify(password, PasswordHasher.DUMMY_HASH);
             throw new AuthenticationError("This account signs in with single sign-on",
                 Map.of("sso_url", "/v1/auth/oidc/start", "identity_provider", user.identityProvider()));
@@ -112,6 +124,28 @@ public class IdentityService {
         audit.log(Events.USER_LOGIN_SUCCEEDED, null, user.id(), null, null, null);
         User refreshed = users.findById(user.id()).orElse(user);
         return new AuthResponse(UserRead.from(refreshed), issueTokens(refreshed, null, userAgent, ip));
+    }
+
+    /**
+     * The password form proxied to Keycloak's resource-owner password grant
+     * (reference: {@code identity/service.py:_login_via_password_grant}).
+     * A rejection from the IdP is an ordinary {@code invalid_credentials} 401 —
+     * the form must not reveal that the account exists at the provider.
+     */
+    private User loginViaPasswordGrant(String email, String password) {
+        Map<String, Object> claims = keycloak.verifyCredentials(email, password);
+        if (claims == null) {
+            // No audit row: there may be no local account at all (the reference
+            // only counts the metric here, it audits nothing).
+            throw new InvalidCredentialsError("Invalid email or password");
+        }
+        User user = linkOrCreateOidcUser(claims, KeycloakOidcProvider.NAME);
+        if (!user.active()) {
+            throw new InvalidCredentialsError("Invalid email or password");
+        }
+        users.touchLastLogin(user.id(), Instant.now());
+        audit.log(Events.USER_LOGIN_SUCCEEDED, null, user.id(), null, null, Map.of("via", "keycloak_password_grant"));
+        return users.findById(user.id()).orElse(user);
     }
 
     /**

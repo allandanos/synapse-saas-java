@@ -100,8 +100,8 @@ public class FgaClient {
                 post(storePath("/write"), withModel(new LinkedHashMap<>(
                     Map.of("deletes", Map.of("tuple_keys", List.of(tuple.asKey()))))));
             } catch (FgaError error) {
-                // The reference only looks for "not found"; OpenFGA 1.x actually answers
-                // "cannot delete a tuple which does not exist" (see the README's milestone-7 notes).
+                // OpenFGA 1.x answers "cannot delete a tuple which does not exist"; the
+                // reference took the same two wordings in synapse-saas@b581b33.
                 if (!tolerable(error, "not found", "does not exist", "did not exist")) {
                     throw error;
                 }

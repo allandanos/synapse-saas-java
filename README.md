@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@60ff0e3` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@b581b33` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -415,6 +415,15 @@ cookie and redirects to `{web_origin}/auth/callback?return_to=…`, and the
 console mints an access token through `/v1/auth/refresh`. `/v1/meta` reports
 `identity_provider`, which is what makes the console show its SSO button.
 
+`SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT=true` additionally lets the ordinary
+password form proxy **unknown or SSO-only** accounts to Keycloak's
+resource-owner password grant: the id_token is verified the same way, the user
+is linked or created, and the normal token pair is issued. A rejection from the
+IdP is an ordinary 401 `invalid_credentials` — the form must not reveal that
+the account exists there. A local account that has a password never takes this
+path. With the setting off (the default), an SSO-only account still gets 401
+with `sso_url`.
+
 ```bash
 make e2e-sso   # boots Keycloak on :8180 with the dev realm and runs all 23 journeys
 ```
@@ -450,11 +459,12 @@ throwaway container that the teardown removes. The recipe also exports
 100/identity, the same values the reference's own e2e workflows use: the
 journeys register dozens of users from one address.
 
-The container runs `quay.io/keycloak/keycloak:22.0`, not the 26.0 the
-reference's nightly workflow pins. Keycloak 23 added a "Show password" button
-to the login theme whose `aria-label` also matches `sso.spec.ts:20`'s
-`getByLabel(/password/i)`, so the spec — which is never modified — fails
-Playwright's strict mode on anything newer. `KEYCLOAK_IMAGE=…` overrides it.
+The container runs `quay.io/keycloak/keycloak:26.0`, the version the
+reference's nightly workflow pins (`KEYCLOAK_IMAGE=…` overrides it). The port's
+milestone 7 found that `sso.spec.ts` could not drive Keycloak >= 23 — a label
+regex on "password" also matched the theme's "Show password" toggle, and a
+brand-new SSO user lands on onboarding rather than the dashboard; the reference
+fixed both in `b581b33`, so the journey runs on the pinned version again.
 
 What the console needs from the server, beyond the conformance contract:
 
@@ -577,41 +587,41 @@ Behaviour a client can distinguish, kept deliberately:
   reference's 400 `storage_error` rather than a 413: the 10 MiB rule is
   enforced in code, and `MaxUploadSizeExceededException` is mapped to the same
   problem so the answer never depends on which layer noticed first.
-- With `SYNAPSE_AUTHZ_BACKEND=openfga`, tuples converge once **right after the
-  mutating transaction commits**, in addition to the outbox event the worker
-  consumes. The reference converges only through the worker, which leaves the
-  member who just gained a role denied for the dispatch interval plus the 30 s
-  decision cache; that window is long enough for the acceptance suite to fail
-  in `openfga` mode. The event is still written and still consumed, so
-  durability, retries and dead-lettering are unchanged and the worker's pass
-  finds an empty diff.
 - `SYNAPSE_REDIS_URL` defaults to empty here; the reference defaults it to its
   own dev stack (`redis://localhost:6380/0`). Both degrade identically when no
   Redis answers.
 
-### Reference behaviour mirrored despite looking wrong
+### Findings the reference adopted
 
-Reported rather than fixed (ADR 0012: the reference server is the oracle):
+Milestone 7 surfaced five behaviours the reference has since fixed in
+`synapse-saas@b581b33` (`contracts/CHANGELOG.md`, "Findings from the ports'
+milestone 7"). Both implementations now agree; listed here because the port
+shipped some of them first:
 
-- `authorization/fga.py:115` tolerates a missing delete only when the body
-  contains `"not found"`, but OpenFGA 1.x answers `cannot delete a tuple which
-  does not exist`. The reference would therefore raise — and dead-letter the
-  event — on a delete that raced. The port accepts both wordings, which can
-  only turn an error into a no-op.
-- `tenancy/dependencies.py:29` declares `_membership_cache =
-  VersionedCache("member", ttl=60)` and never reads or writes it. The port
-  does not carry the dead namespace.
-- `apps/web/e2e/sso.spec.ts:20` uses `getByLabel(/password/i)`, which on
-  Keycloak >= 23 resolves to both the password input and the theme's new
-  "Show password" toggle — a Playwright strict-mode violation. The reference's
-  own `.github/workflows/e2e-sso.yml:63` pins `keycloak:26.0`, so that nightly
-  job cannot be passing either. The recipe here runs 22.0 instead of touching
-  the spec.
-- `identity/provider.py` documents `verify_credentials` as "email+password
-  proxied to Keycloak", but `identity/service.py:login` never asks the
-  identity provider — only `oidc_start`/`oidc_callback` call
-  `get_identity_provider()`. The port keeps the same seam (and the same
-  `SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT` switch) with the same effect: the
-  password grant is reachable from the provider, not from `/v1/auth/login`.
+- **OpenFGA converged only through the worker**, leaving a member who had just
+  gained a role denied for the dispatch interval plus the 30 s decision cache.
+  Both now converge eagerly after the mutating transaction commits, with the
+  outbox event still carrying durability and retries.
+- **Organization creation never queued the owner's tuples**, so a brand-new
+  org's owner was denied in `openfga` mode until a manual `authz fga sync`.
+  Here that falls out of attaching the owner role, which queues the sync like
+  any other role write; the reference added the call explicitly.
+- **A missing tuple delete was tolerated only on `"not found"`**, but OpenFGA
+  1.x answers `cannot delete a tuple which does not exist` — so a raced delete
+  raised and the event dead-lettered. Both wordings are accepted now.
+- **`SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT` was a dead setting**: `login` never
+  consulted the identity provider. With it on, an unknown or SSO-only account
+  is proxied to Keycloak's password grant, linked or created and signed in; a
+  rejection is an ordinary 401 `invalid_credentials`, and with the setting off
+  an SSO-only account still gets 401 with `sso_url`. The code flow stays the
+  default.
+- **A dead `member` cache namespace** was declared in tenant resolution and
+  never read or written. Neither implementation carries it.
+
+`apps/web/e2e/sso.spec.ts` was red against the `keycloak:26.0` its own nightly
+workflow pins, for two reasons: `getByLabel(/password/i)` also matched the
+theme's "Show password" toggle (Keycloak >= 23), and a brand-new SSO user lands
+on onboarding, which the final assertion did not accept. The reference fixed
+the spec; `make e2e-sso` runs 26.0.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.

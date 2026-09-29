@@ -109,6 +109,9 @@ public class OrganizationService {
 
         Membership membership = members.insert(org.id(), ownerUserId, null, "active", Instant.now());
         syncSeatGauge(org.id());
+        // Attaching the owner role invalidates their caches AND queues the OpenFGA tuple
+        // sync (a no-op under the rbac backend), so the owner's tuples exist before their
+        // first gated request — the reference added the same call in `create_organization`.
         authz.attachRole(membership.id(), org.id(), List.of(), PermissionCatalog.SYSTEM_ROLE_OWNER);
 
         audit.log(Events.ORG_CREATED, org.id(), null, "organization", org.id(), Map.of("name", name, "slug", finalSlug));

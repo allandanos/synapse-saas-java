@@ -271,6 +271,19 @@ class OpenFgaParityJourneyTest extends PostgresTestSupport {
     }
 
     @Test
+    void aNewOrgsOwnerIsAllowedBeforeAnyWorkerPass() throws Exception {
+        // The reference's TestEagerConvergence: converging only through the worker left a
+        // fresh org's owner denied for the dispatch interval plus the decision cache.
+        Tenant owner = api.makeTenant("fga-eager");
+
+        // No outbox.runOnce() here: attaching the owner role queued the sync and the
+        // after-commit hook already wrote the tuples.
+        assertThat(store.check("user:" + owner.userId(), FgaModel.relationFor("org:delete"),
+            "organization:" + owner.orgId())).isTrue();
+        assertThat(api.get("/v1/orgs/current", owner.headers()).status()).isEqualTo(200);
+    }
+
+    @Test
     void anApiKeyPrincipalNeverConsultsTheStore() throws Exception {
         Tenant owner = api.makeTenant("fga-key");
         outbox.runOnce();

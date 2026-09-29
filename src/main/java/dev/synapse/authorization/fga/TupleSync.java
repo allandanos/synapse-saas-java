@@ -38,14 +38,16 @@ import org.springframework.transaction.support.TransactionTemplate;
  * outbox carries retries and dead-lettering, so no request ever waits on
  * OpenFGA and a transient outage is replayed, not lost.
  *
- * <p><strong>Port addition.</strong> The reference converges only through the
- * worker, which leaves a window (its dispatch interval plus the 30 s decision
- * cache) in which the member who just gained a role is still denied — with
- * {@code SYNAPSE_AUTHZ_BACKEND=openfga} that window is long enough for the
- * acceptance suite to fail. {@link #queue} therefore ALSO converges once,
- * best effort, right after the transaction commits. The outbox event is still
- * written and still consumed, so durability, retries and dead-lettering are
- * unchanged, and the second pass is a no-op because the diff is then empty.
+ * <p>Converging only through the worker leaves a window — its dispatch interval
+ * plus the 30 s decision cache — in which the member who just gained a role is
+ * still denied; with {@code SYNAPSE_AUTHZ_BACKEND=openfga} that is long enough
+ * for the acceptance suite to fail, and a brand-new organization's owner was
+ * locked out of their own org entirely. {@link #queue} therefore ALSO converges
+ * once, best effort, right after the transaction commits. The outbox event is
+ * still written and still consumed, so durability, retries and dead-lettering
+ * are unchanged, and the worker's pass is a no-op because the diff is then
+ * empty. The reference adopted the same hook in {@code synapse-saas@b581b33}
+ * ({@code core/cache.py:defer_after_commit}).
  */
 @Component
 public class TupleSync {

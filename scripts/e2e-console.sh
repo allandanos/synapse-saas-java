@@ -47,11 +47,10 @@ REDIS_PORT="${REDIS_PORT:-6390}"
 KEYCLOAK="${KEYCLOAK:-0}"
 KEYCLOAK_NAME="${KEYCLOAK_NAME:-keycloak-java}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
-# 22.0, not the 26.0 the reference's nightly workflow pins: Keycloak >= 23's login
-# theme adds a "Show password" button whose aria-label ALSO matches the spec's
-# getByLabel(/password/i), so sso.spec.ts:20 fails Playwright's strict mode. The
-# spec is never modified, so the recipe picks the last theme it can drive.
-KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:22.0}"
+# The version the reference's nightly e2e-sso job pins. Its sso.spec.ts addresses
+# the password field by role since synapse-saas@b581b33, so Keycloak >= 23's
+# "Show password" toggle no longer breaks Playwright's strict mode.
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
 KEYCLOAK_REALM_DIR="${KEYCLOAK_REALM_DIR:-${TMPDIR:-/tmp}/synapse-keycloak-java}"
 RESET_DB="${RESET_DB:-1}"
 KEEP_STACK="${KEEP_STACK:-0}"
