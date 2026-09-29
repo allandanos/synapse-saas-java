@@ -330,7 +330,8 @@ class WorkerJourneyTest extends PostgresTestSupport {
 
         MimeMessage reset = messageWithSubjectContaining("Reset your password");
         assertThat(reset.getAllRecipients()[0].toString()).isEqualTo(tenant.email());
-        assertThat(body(reset)).contains("/login?reset=").contains("30 minutes");
+        // The link must land on the console's reset FORM, with a token the page can read.
+        assertThat(body(reset)).containsPattern("/reset-password\\?reset=[A-Za-z0-9_-]+").contains("30 minutes");
 
         MimeMessage invoice = messageWithSubjectContaining("Invoice " + finalized.text("number"));
         assertThat(invoice.getAllRecipients()[0].toString()).as("the chain falls through to the org owner").isEqualTo(tenant.email());

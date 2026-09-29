@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@6272ab3` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@60ff0e3` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -326,17 +326,20 @@ What the console needs from the server, beyond the conformance contract:
 | `fetch(…, { credentials: "include" })` from `http://localhost:3300` | allow that exact origin **with credentials**, and expose `X-Request-Id`, `Retry-After`, `Content-Disposition`, `X-Total-Count` (`SYNAPSE_WEB_ORIGIN`, plus `SYNAPSE_WEB_ORIGINS` for extras) |
 | silent `POST /v1/auth/refresh` with an empty body on mount | accept the `synapse_rt` cookie when the body carries no token, and re-set it — `HttpOnly`, `SameSite=Lax`, `Path=/`, **not** `Secure` on plain-http localhost (`SYNAPSE_COOKIE_SECURE` derives from the origin's scheme) |
 | mirror the active org into `X-Org-Id` from its own `synapse_org` cookie | resolve the tenant from the header *and* from the `org` claim after `switch-org` |
-| poll MailHog for invite/invoice mail | dispatch the outbox every 5 s with the worker in-process, and send through SMTP with the invoice PDF attached |
-| parse the raw MIME of the invoice mail | write the part headers the reference's `EmailMessage` writes (see the note below) |
+| poll MailHog for invite/invoice/reset mail | dispatch the outbox every 5 s with the worker in-process, and send through SMTP with the invoice PDF attached |
+| follow the emailed password-reset link | link to `{web_origin}/reset-password?reset=<token>` — the console's reset form; `/login` only recognises `reset=done` |
+| read the reset token out of the raw body | keep the link extractable after quoted-printable decoding (soft breaks and `=3D`) |
+| find the invoice PDF in the raw MIME | attach a base64 `application/pdf` part (`fixtures.ts` `pdfAttachmentBase64()` accepts any spelling) |
 
-Console-visible differences from the reference server: **none**. The one
-journey that failed on first run — `invoice-email.spec.ts:56`, which matches
-the attachment part with a regex — was a real divergence and is fixed:
-`MimeBuilder` now composes the message the way Python's `email.message
-.EmailMessage` does (flat `multipart/mixed`; `Content-Type: application/pdf`,
-`Content-Transfer-Encoding: base64`, `Content-Disposition: attachment;
-filename="…"`, `MIME-Version: 1.0`, in that order) instead of letting
-`MimeMessageHelper` pick its own shape.
+Console-visible differences from the reference server: **none**. Outbound mail
+is still composed by `MimeBuilder` rather than `MimeMessageHelper`, so the
+bytes match the reference's `email.message.EmailMessage` exactly — a flat
+`multipart/mixed`, `Content-Type: application/pdf` with no `name=`, a quoted
+`filename=`, a per-part `MIME-Version`, and the reference's choice of
+7bit/quoted-printable/base64 for the text. `invoice-email.spec.ts` no longer
+requires that (it accepts any base64 PDF part since
+`synapse-saas@7bdb348`, a change the ports' milestone 6 prompted), but byte
+parity with the reference is the cheaper invariant to keep.
 
 ### Dev seed
 
@@ -348,7 +351,9 @@ names `Acme <Role>` — the defaults the journeys' fixtures fall back to for
 `E2E_PLATFORM_ADMIN_EMAIL`/`_PASSWORD`. It is idempotent and refuses to run
 when `SYNAPSE_ENV=production`. The org is created through
 `OrganizationService`, so it carries the free subscription, the seat gauge and
-the `org.created`/`member.invited`/`member.joined` events a real org would.
+the `org.created`/`member.invited`/`member.joined` events a real org would; it
+then grants `limit:users = 10` (source `override`) so five demo users do not
+sit over the free plan's three seats.
 
 ## Layout
 

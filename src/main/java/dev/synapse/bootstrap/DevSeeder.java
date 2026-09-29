@@ -1,11 +1,14 @@
 package dev.synapse.bootstrap;
 
 import dev.synapse.core.config.SynapseProperties;
+import dev.synapse.entitlements.EntitlementResolver;
+import dev.synapse.entitlements.EntitlementService;
 import dev.synapse.identity.PasswordHasher;
 import dev.synapse.identity.User;
 import dev.synapse.identity.UserRepository;
 import dev.synapse.tenancy.OrganizationService;
 import dev.synapse.tenancy.dto.OrganizationRead;
+import dev.synapse.usage.UsageService;
 import java.util.List;
 import java.util.Locale;
 import org.slf4j.Logger;
@@ -43,6 +46,8 @@ public class DevSeeder implements ApplicationRunner {
     public static final String OWNER_EMAIL = "owner@acme.example.com";
     public static final String ORG_NAME = "Acme Corporation";
     public static final String ORG_SLUG = "acme";
+    /** The demo org's {@code users} limit grant — the free plan ships three seats, the seed fills five. */
+    public static final long SEAT_LIMIT = 10;
 
     /** One demo user per system role; the owner also carries {@code is_platform_admin}. */
     public static final List<String> ROLE_KEYS = List.of("owner", "admin", "billing", "developer", "member");
@@ -51,14 +56,17 @@ public class DevSeeder implements ApplicationRunner {
     private final UserRepository users;
     private final PasswordHasher hasher;
     private final OrganizationService organizations;
+    private final EntitlementService entitlements;
     private final ConfigurableApplicationContext context;
 
     public DevSeeder(SynapseProperties props, UserRepository users, PasswordHasher hasher,
-                     OrganizationService organizations, ConfigurableApplicationContext context) {
+                     OrganizationService organizations, EntitlementService entitlements,
+                     ConfigurableApplicationContext context) {
         this.props = props;
         this.users = users;
         this.hasher = hasher;
         this.organizations = organizations;
+        this.entitlements = entitlements;
         this.context = context;
     }
 
@@ -110,7 +118,12 @@ public class DevSeeder implements ApplicationRunner {
             organizations.acceptInviteByEmail(org.id(), email);
         }
 
-        log.info("dev_seeded org={} roles={}", org.slug(), ROLE_KEYS);
+        // Five demo users on a free plan (three seats) would show an over-quota seat
+        // meter out of the box; grant the seats the way an operator would.
+        entitlements.grant(org.id(), EntitlementResolver.LIMIT_FEATURE_PREFIX + UsageService.SEATS_METRIC, "override", null, true,
+            "dev seed: one demo user per system role", SEAT_LIMIT, owner.id());
+
+        log.info("dev_seeded org={} roles={} seats={}", org.slug(), ROLE_KEYS, SEAT_LIMIT);
         return "dev seed: org " + org.slug() + " + " + ROLE_KEYS.size() + " users (password " + PASSWORD + ")";
     }
 }

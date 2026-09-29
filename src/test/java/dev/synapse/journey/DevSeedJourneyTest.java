@@ -75,6 +75,8 @@ class DevSeedJourneyTest extends PostgresTestSupport {
         Res entitlements = api.get("/v1/entitlements", headers);
         assertThat(entitlements.status()).isEqualTo(200);
         assertThat(entitlements.body().get("plan_key").asText()).isEqualTo("free");
+        // The seed grants the seats its five demo users need; the free plan ships three.
+        assertThat(entitlements.body().get("limits").get("users").get("value").asLong()).isEqualTo(DevSeeder.SEAT_LIMIT);
 
         // The console's members page reads {data, meta} from this route; all five demo users are active.
         Res members = api.get("/v1/orgs/current/members", headers);

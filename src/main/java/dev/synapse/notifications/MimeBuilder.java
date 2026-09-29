@@ -127,8 +127,15 @@ final class MimeBuilder {
     /** RFC 2045 §6.7 body encoding, soft-wrapped so no line (including the {@code =}) exceeds the policy length. */
     static String quotedPrintable(String text) {
         StringBuilder out = new StringBuilder();
-        for (String line : text.split("\n", -1)) {
+        String[] lines = text.split("\n", -1);
+        // A body ends with a newline, which split() reports as a trailing empty
+        // element — that one is the terminator, every other empty line is a real
+        // blank line in the message and must survive.
+        int count = lines.length > 0 && lines[lines.length - 1].isEmpty() ? lines.length - 1 : lines.length;
+        for (int index = 0; index < count; index++) {
+            String line = lines[index];
             if (line.isEmpty()) {
+                out.append(CRLF);
                 continue;
             }
             byte[] bytes = line.getBytes(StandardCharsets.UTF_8);

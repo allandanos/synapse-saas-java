@@ -93,7 +93,7 @@ public class NotificationHandlers {
         if (email == null || token == null) {
             return;
         }
-        String link = webUrl("/login?reset=" + token); // the console routes to the reset form
+        String link = webUrl("/reset-password?reset=" + token); // the console's reset form reads ?reset=
         notifier.send(email, "Reset your password",
             "A password reset was requested for your account.\n\n"
                 + "Reset it here (valid 30 minutes):\n" + link + "\n\n"
