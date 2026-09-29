@@ -120,7 +120,10 @@ public class NotificationHandlers {
         String orgName = organization == null ? "Customer" : organization.name();
         String billingEmail = invoice.billingCustomerId() == null ? null
             : customers.findById(invoice.billingCustomerId()).map(BillingCustomer::email).orElse(null);
-        String recipient = billingEmail != null ? billingEmail : settingsBillingEmail(organization);
+        // Framework-drafted invoices carry no billing customer: fall through the
+        // same chain as every other billing email (customer → settings → owner)
+        // instead of dropping the mail on the floor.
+        String recipient = billingEmail != null ? billingEmail : billingRecipient(invoice.organizationId());
         if (recipient == null || recipient.isBlank()) {
             log.info("invoice_email_no_recipient invoice_id={}", invoiceId);
             return;
