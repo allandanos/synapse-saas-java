@@ -6,7 +6,8 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@295672b` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@295672b` + the milestone-4 findings in
+`contracts/CHANGELOG.md` (decimal Xendit amounts, idempotent `finalize`) (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -16,7 +17,7 @@ that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entr
 | 1 | pure logic + core + probes/`/v1/meta` | **done** — problem documents for every error, request context + `X-Request-Id`, RLS GUCs, transactional outbox + audit writers, Flyway baseline |
 | 2 | identity, tenancy, authorization (RBAC), API keys | **done** — `test_meta_and_health`, `test_auth`, `test_tenancy`, `test_authorization`, `test_api_keys` pass |
 | 3 | subscriptions, entitlements, usage | **done** — plan catalog (`plans.yaml` → validated → synced at boot), default `free` subscription, trial/change/cancel/resume with the state machine and arrears proration, entitlement resolver + operator grants, counters/gauges/idempotency/atomic enforcement, `api_requests` metering of key auth, `users` seat gauge + invite cap. `test_subscriptions`, `test_usage_and_entitlements` and `test_api_keys` pass — except `test_feature_gate_problem_shape`, which needs `GET /v1/agents` (milestone 5) |
-| 4 | billing, invoicing, worker | — |
+| 4 | billing providers, invoicing, notifications, worker | **done** — five providers behind one capability table (manual, Stripe, Paddle, Xendit, PayMongo) with real HTTP clients and webhook verification, checkout/confirm/portal, framework-native invoicing (draft → finalize → pay/void, overage + proration lines, PDFs), spend/revenue reports, signed provider-webhook ingest with an idempotency ledger, the outbox dispatcher + signed outbound deliveries (Fernet-encrypted endpoint secrets), SMTP notifications, and the seven cron jobs in-process or standalone. `test_billing` passes |
 | 5 | webhooks, files, flags, audit, agents | — |
 | 6 | console parity (Playwright) | — |
 | 7 | OIDC + OpenFGA, hardening | — |
@@ -26,15 +27,17 @@ against this server (`make conformance`).
 
 ### Deliberately left for later milestones
 
-- Billing beyond the plan change: customers, checkout, invoices, provider
-  webhooks, the renewal/partition-maintenance worker (milestone 4). The
-  provider capability table already drives `POST /v1/subscription/change`
-  (hosted providers answer 409 `checkout_required` until a subscription was
-  purchased through them); the "hosted provider holds the subscription"
-  branch reaches `BillingProvider.changePlan`, a clearly marked seam.
+- Webhook **management** routes (`/v1/webhooks/endpoints`, deliveries, retry)
+  and the files/flags/audit/agents surfaces (milestone 5). The delivery engine
+  itself is done: endpoints inserted directly are fanned out to and signed, and
+  `WebhookDeliveryService.createEndpoint` already mints and encrypts secrets.
 - Redis-backed permission/membership/entitlement caches and the auth rate
   limiter (`core/cache`, `core/rate_limit`): every check reads Postgres
-  directly; `EntitlementCache` is the drop-in seam.
+  directly; `EntitlementCache` is the drop-in seam. `/readyz` reports
+  `redis: not_configured`, exactly as the reference does when the URL is unset.
+- The OpenFGA tuple-sync consumer the outbox dispatcher leaves room for
+  (milestone 7), and Stripe plan sync from the CLI
+  (`StripeBillingProvider.upsertProductAndPrice` exists, nothing calls it yet).
 - `GET /v1/agents` and the other feature-gated routes (milestone 5) — the
   gate itself (`@RequireFeature`, `FeatureGate`) is in place.
 - OIDC login and OpenFGA (milestone 7). SSO-only users get the reference's
@@ -47,7 +50,9 @@ records over the fixed baseline schema · Flyway (`V1__baseline.sql` =
 `contracts/schema-v1.sql`; later Alembic migrations are mirrored as SQL) ·
 Spring Security's `Argon2PasswordEncoder` (argon2id, same parameters and
 encoding as the reference, hashes interoperate) · `java-jwt` (HS256, same
-claims) · Micrometer + Prometheus at `/metrics` · Testcontainers.
+claims) · OpenPDF (core Helvetica, no system deps) for invoice PDFs ·
+`spring-boot-starter-mail` for SMTP · Micrometer + Prometheus at `/metrics` ·
+Testcontainers + GreenMail.
 
 **Why no ORM.** The schema is Postgres-specific (citext, `text[]`, jsonb, RLS
 policies, `SECURITY DEFINER` lookups, partitioned tables) and is never
@@ -64,7 +69,9 @@ make test             # unit tests + @SpringBootTest journeys (Testcontainers, o
 make test-unit        # pure-logic tests only, no database
 make run              # against the reference dev stack's Postgres on :5433
 make run-pg           # :8080 against the scratch DB with a bootstrapped operator (what `make conformance` expects)
-make conformance      # reference suite (milestone-2 modules) → http://localhost:8080
+make worker           # the standalone worker: cron jobs, no web server
+make jobs-run-once    # every job once, printing `name: count` (JOBS="dispatch_outbox purge_expired" for a subset)
+make conformance      # reference suite (milestone 1–4 modules) → http://localhost:8080
 ```
 
 Boot with the packaged jar:
@@ -84,6 +91,63 @@ promoted, its password is left untouched), and syncs the plan catalog
 (`PlanCatalogSyncRunner`, `SYNAPSE_AUTO_SYNC_PLANS=true`). That operator is
 what the external conformance suite logs in with
 (`SYNAPSE_CONFORMANCE_ADMIN_EMAIL/PASSWORD`).
+
+### Worker
+
+The seven maintenance jobs run **in-process with the API** by default
+(`SYNAPSE_WORKER_ENABLED=true`), on the reference's cadences:
+
+| Job | Cadence | What it does |
+|---|---|---|
+| `dispatch_outbox` | every 5 s | fan public events out to the org's subscribed `webhook_endpoints`, mark them published, then run the in-process email consumers |
+| `deliver_webhooks` | every 15 s | POST due deliveries with `X-Synapse-Signature`, walk the backoff ladder, `exhausted` after 6 attempts |
+| `rollup_usage` | hourly at :05 | rebuild the current period's counters from `usage_events` |
+| `expire_entitlements` | hourly at :10 | revoke lapsed grants, emit `entitlement.expired`, invalidate caches |
+| `advance_recurring_billing` | hourly at :20 | for locally billed providers: invoice the ENDED period through the invoicing engine, then roll the period forward |
+| `ensure_partitions` | daily 03:30 | pre-create `usage_events_yYYYYmMM` three months ahead |
+| `purge_expired` | daily 03:40 | retention: deliveries 30 d (exhausted 90 d), outbox 7 d, idempotency keys 90 d, audit logs `SYNAPSE_AUDIT_RETENTION_DAYS` |
+
+Coordination needs **no extra table**: every tick takes
+`pg_try_advisory_lock(hashtext('job:<name>'))` on its own connection and skips
+if another worker holds it, and rows are claimed with `FOR UPDATE SKIP LOCKED`,
+so N API instances and N workers can run the same jobs safely.
+
+```bash
+java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --worker                    # standalone: jobs only, no web server
+java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --jobs-run-once --all       # one pass, prints `name: count`, then exits
+java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --jobs-run-once purge_expired
+SYNAPSE_WORKER_ENABLED=false java -jar target/…jar                           # API only (a separate worker deployment)
+```
+
+`--jobs-run-once` exits 2 on an unknown or empty job selection and 1 when a job
+threw; `skipped (locked)` means another worker was already running it.
+
+### Billing providers
+
+`SYNAPSE_BILLING_PROVIDER` selects one of five; services branch on the
+**capability table** (ADR 0004), never on the name:
+
+| Provider | hosted_checkout | billing_portal | recurring_hosted | webhook_signed | client_confirm | Webhook authentication |
+|---|---|---|---|---|---|---|
+| `manual` | ✓ (internal page) | | | | ✓ | `X-Manual-Token` equals `SYNAPSE_MANUAL_WEBHOOK_TOKEN` |
+| `stripe` | ✓ | ✓ | ✓ | ✓ | | `Stripe-Signature: t=…,v1=…`, HMAC-SHA256 over `"{t}.{body}"`, 300 s window |
+| `paddle` | ✓ | | | ✓ | | `Paddle-Signature: ts=…;h1=…` over `"{ts}:{body}"` |
+| `xendit` | ✓ | | | ✓ | | `X-Callback-Token` equals `SYNAPSE_XENDIT_WEBHOOK_TOKEN` |
+| `paymongo` | ✓ | | | ✓ | | `Paymongo-Signature: t=…,v1=…` (Stripe's scheme) |
+
+Only `manual` carries `client_confirm`, so only `manual` may activate a plan on
+`POST /v1/billing/checkout/confirm`; every other provider answers 409
+`checkout_confirm_not_allowed` and activates when its webhook arrives. Providers
+WITHOUT `recurring_hosted` are billed by us — `advance_recurring_billing` renews
+exactly those. Money is integer minor units end to end (ADR 0006); Xendit, which
+speaks major units, converts with `BigDecimal`.
+
+Provider webhooks land on `POST /v1/billing/webhooks/{provider}` (unauthenticated
+by bearer — the signature IS the authentication). The controller reads the raw
+bytes itself, `provider_webhook_events` makes replays a 200 no-op, and each
+translated event applies in its own savepoint: a `DomainError` is recorded on the
+ledger row and still answers 200, anything else 500s so the row rolls back and
+the provider retries.
 
 ### Plan catalog
 
@@ -149,21 +213,49 @@ Same names and defaults as the reference wherever the concept exists
 | `SYNAPSE_DEFAULT_PLAN_KEY` | `free` | the subscription every new organization starts on, and the plan an org without one resolves against |
 | `SYNAPSE_GRACE_ON_PAST_DUE` | `true` | `past_due` keeps plan features |
 | `SYNAPSE_BILLING_CURRENCY` | `PHP` | |
-| `SYNAPSE_STRIPE_SECRET_KEY`, `SYNAPSE_PADDLE_SECRET_KEY`, `SYNAPSE_XENDIT_SECRET_KEY`, `SYNAPSE_PAYMONGO_SECRET_KEY` | unset | required when that provider is selected (409 `billing_provider_not_configured` otherwise); the provider HTTP integrations are milestone 4 |
+| `SYNAPSE_STRIPE_SECRET_KEY`, `SYNAPSE_PADDLE_SECRET_KEY`, `SYNAPSE_XENDIT_SECRET_KEY`, `SYNAPSE_PAYMONGO_SECRET_KEY` | unset | required when that provider is selected (409 `billing_provider_not_configured` otherwise) |
+| `SYNAPSE_STRIPE_WEBHOOK_SECRET`, `SYNAPSE_PADDLE_WEBHOOK_SECRET`, `SYNAPSE_PAYMONGO_WEBHOOK_SECRET` | unset | HMAC secret for that provider's webhook signature |
+| `SYNAPSE_XENDIT_WEBHOOK_TOKEN`, `SYNAPSE_MANUAL_WEBHOOK_TOKEN` | unset | static callback token; empty ⇒ that provider's ingest refuses everything |
+| `SYNAPSE_MANUAL_PAY_TO_INSTRUCTIONS` | empty | payment instructions printed on unpaid invoice PDFs and mailed with them |
+| `SYNAPSE_WORKER_ENABLED` | `true` | run the seven cron jobs in-process with the API |
+| `SYNAPSE_AUDIT_RETENTION_DAYS` | `365` | `purge_expired` deletes `audit_logs` older than this |
+| `SYNAPSE_STORAGE_PRESIGN_SECONDS` | `900` | `purge_expired` reclaims presigned uploads never completed after twice this |
+| `SYNAPSE_NOTIFIER` | `smtp` | `noop` logs instead of sending |
+| `SYNAPSE_SMTP_HOST` / `_PORT` / `_FROM` / `_USERNAME` / `_PASSWORD` | unset / `1025` / `synapse@localhost` / unset | empty host ⇒ every send is logged and dropped |
+| `SYNAPSE_SMTP_TLS` | `none` | `none` \| `starttls` \| `ssl`; AUTH over a plaintext channel is refused |
 
 ### Tests
 
 - `mvn test` runs the pure-logic unit tests (permission catalog and role
   sets, JWT claims, argon2 interop with a reference hash, problem documents,
-  ids/slugs, email validation, tenant resolution order, and the milestone-3
-  transliterations: catalog validation, subscription state machine, proration
-  arithmetic, entitlement resolver matrix, `checkAgainst`) and the
-  `@SpringBootTest` journeys over a real Postgres: `ApiJourneyTest` (register →
+  ids/slugs, email validation, tenant resolution order, the milestone-3
+  transliterations — catalog validation, subscription state machine, proration
+  arithmetic, entitlement resolver matrix, `checkAgainst` — and the milestone-4
+  ones: the webhook signature matrix for all five providers with digests pinned
+  against the reference's `sign_payload`, `translate_webhook` fixtures per
+  provider, the invoice transition table / numbering / period arithmetic /
+  line reconciliation, the worker's batch, backoff and retention constants, the
+  event audience, Fernet round-trips **plus a token written by the reference's
+  `cryptography`**, and the provider HTTP clients against a local
+  `StubProviderServer`).
+- `@SpringBootTest` journeys over a real Postgres: `ApiJourneyTest` (register →
   org → invite → accept → roles → API keys → operator suspension, and the
-  problem-document contract) and `BillingJourneyTest` (catalog → free plan →
+  problem-document contract), `BillingJourneyTest` (catalog → free plan →
   consume until 402 → trial → paid plans with proration → idempotent record →
   batch rollback → gauges + seats → operator grants + feature gate → key-auth
-  metering → ten parallel consumers against a three-slot limit).
+  metering → ten parallel consumers against a three-slot limit),
+  `InvoicingJourneyTest` (manual checkout → confirm → draft → finalize → PDF →
+  operator pay/void, overage priced from real usage, proration landing on the
+  next draft, the renewal job invoicing an ended period and leaving hosted or
+  cancelling subscriptions alone, cross-tenant 404s),
+  `BillingWebhookJourneyTest` (unsigned 400 with no ledger row, apply once,
+  replay 200 no-op, a business rejection recorded + 200, an unexpected failure
+  500 with the ledger row rolled back) and `WorkerJourneyTest` (fan-out to a
+  live HTTP endpoint with a signature the receiver verifies, internal events
+  never fanned out, endpoint filters, the delivery ladder to `exhausted`, a
+  poison outbox row dead-lettered on the eighth attempt, partition
+  pre-creation, every retention window, and the invite/reset/invoice emails
+  captured by an in-process GreenMail with the invoice PDF attached).
 - The journeys use Testcontainers (`pgvector/pgvector:pg17` — the baseline
   needs `vector` and `citext`) unless `SYNAPSE_TEST_JDBC_URL` points at an
   existing scratch database (`make test-pg`).
@@ -190,7 +282,15 @@ src/main/java/dev/synapse/
   apikeys/         keys bounded by their creator, ApiKeyAuthenticator (+ api_requests metering), controller
   subscriptions/   PlanCatalog (+ loader, sync, boot runner), Plan/Metric/Subscription records + repositories,
                    SubscriptionStateMachine, Proration, SubscriptionService, /v1/plans, /v1/subscription
-  billing/         BillingCapability table, ManualBillingProvider, hosted-provider descriptors, BillingService.changePlan
+  billing/         BillingCapability table + BillingProvider (protocol DTOs in BillingRefs), Signatures, ProviderHttp,
+                   providers/{Manual,Stripe,Paddle,Xendit,PayMongo}BillingProvider, BillingProviderRegistry,
+                   BillingService (customers, checkout, portal, plan change), /v1/billing,
+                   invoicing/ (Invoice + lines, transitions, numbering, InvoicingService, InvoicePdf, routes),
+                   reporting/ (spend + revenue read models), webhooks/ (raw-body ingest + provider_webhook_events ledger)
+  webhooks/        WebhookEndpoint/Delivery repositories, FernetCodec (secrets at rest), WebhookDeliveryService (envelope + signature)
+  notifications/   Notifier seam, SmtpNotifier / NoopNotifier, NotificationHandlers (invite, reset, invoice, soft limit)
+  worker/          Job + JobRegistry + AdvisoryLock, WorkerScheduler (@Scheduled cadences), JobsRunOnce,
+                   jobs/{OutboxDispatch,DeliverWebhooks,RollupUsage,ExpireEntitlements,AdvanceRecurringBilling,EnsurePartitions,PurgeExpired}
   entitlements/    EntitlementResolver (pure), EntitlementService (+ cache seam), FeatureGate (@RequireFeature),
                    /v1/entitlements, operator /v1/admin/orgs/{id}/entitlements
   usage/           UsageService (record/consume/gauges/idempotency/soft limits), UsageRepository, /v1/usage/*
@@ -224,5 +324,11 @@ Behaviour a client can distinguish, kept deliberately:
   after authentication (the reference uses a savepoint inside the request
   transaction); the observable contract — a metering failure never fails the
   request — is the same.
+- The delivery envelope's `created_at` is an ISO-8601 instant ending in `Z`
+  (`2026-09-29T02:36:43.123456Z`); the reference renders the same moment as
+  `+00:00`. Both parse identically.
+- Invoice PDFs carry the same visible content as the reference's (same
+  sections, same latin-1 sanitising, same money and quantity formatting) but a
+  different byte layout — OpenPDF is not fpdf2.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.

@@ -65,6 +65,13 @@ public final class ApiClient {
         return call(HttpMethod.PATCH, path, headers, body);
     }
 
+    /** For binary responses (invoice PDFs): the raw response, never parsed as JSON. */
+    public MockHttpServletResponse raw(HttpMethod method, String path, Map<String, String> headers) throws Exception {
+        MockHttpServletRequestBuilder builder = request(method, path);
+        headers.forEach(builder::header);
+        return mvc.perform(builder).andReturn().getResponse();
+    }
+
     public Res call(HttpMethod method, String path, Map<String, String> headers, Object body) throws Exception {
         MockHttpServletRequestBuilder builder = request(method, path);
         headers.forEach(builder::header);
