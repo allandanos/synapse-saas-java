@@ -103,6 +103,17 @@ public class PlanRepository {
             .update();
     }
 
+    /**
+     * Merge one provider's refs into {@code plans.provider_refs} (plan sync).
+     * {@code ||} keeps the other providers' entries: a catalog can be pushed to
+     * Stripe and Paddle without either erasing the other.
+     */
+    public void mergeProviderRefs(UUID id, String provider, String refsJson) {
+        jdbc.sql("UPDATE plans SET provider_refs = provider_refs || jsonb_build_object(:provider, CAST(:refs AS jsonb)), "
+                + "updated_at = now() WHERE id = :id")
+            .param("provider", provider).param("refs", refsJson).param("id", id).update();
+    }
+
     public void archive(UUID id, Instant at) {
         jdbc.sql("UPDATE plans SET archived_at = :at, updated_at = now() WHERE id = :id").param("at", Rows.at(at)).param("id", id).update();
     }

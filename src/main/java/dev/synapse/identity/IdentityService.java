@@ -114,6 +114,73 @@ public class IdentityService {
         return new AuthResponse(UserRead.from(refreshed), issueTokens(refreshed, null, userAgent, ip));
     }
 
+    /**
+     * Resolve an OIDC identity to a local user (reference:
+     * {@code identity/service.py:link_or_create_oidc_user}).
+     *
+     * <ol>
+     *   <li>by (provider, subject) — the stable link;</li>
+     *   <li>else by email, ONLY when the provider asserts {@code email_verified}
+     *       — an unverified email must never take over an existing local account;</li>
+     *   <li>else create an SSO-only user (no local password).</li>
+     * </ol>
+     */
+    @Transactional
+    public User linkOrCreateOidcUser(Map<String, Object> claims, String provider) {
+        String subject = claims.get("sub") == null ? "" : String.valueOf(claims.get("sub"));
+        if (subject.isEmpty()) {
+            throw new AuthenticationError("OIDC claims carry no subject");
+        }
+        String email = claims.get("email") == null ? "" : String.valueOf(claims.get("email")).trim().toLowerCase(java.util.Locale.ROOT);
+        String displayName = firstNonEmpty(claims.get("name"), claims.get("preferred_username"), email, subject);
+
+        User bySubject = users.findByProviderSubject(provider, subject).orElse(null);
+        if (bySubject != null) {
+            if (!bySubject.active()) {
+                throw new AuthenticationError("User is inactive");
+            }
+            users.touchLastLogin(bySubject.id(), Instant.now());
+            audit.log(Events.USER_LOGIN_SUCCEEDED, null, bySubject.id(), null, null, Map.of("via", provider));
+            return users.findById(bySubject.id()).orElse(bySubject);
+        }
+
+        if (!email.isEmpty() && Boolean.TRUE.equals(claims.get("email_verified"))) {
+            User byEmail = users.findByEmail(email).orElse(null);
+            if (byEmail != null) {
+                if (!byEmail.active()) {
+                    throw new AuthenticationError("User is inactive");
+                }
+                users.linkProvider(byEmail.id(), provider, subject);
+                users.touchLastLogin(byEmail.id(), Instant.now());
+                audit.log(Events.USER_LOGIN_SUCCEEDED, null, byEmail.id(), null, null,
+                    Map.of("via", provider, "linked", "verified_email"));
+                return users.findById(byEmail.id()).orElseThrow();
+            }
+        }
+
+        if (email.isEmpty()) {
+            throw new AuthenticationError("OIDC claims carry no email; cannot create a user");
+        }
+        if (users.findByEmail(email).isPresent()) {
+            // Same email, unverified at the IdP: refuse rather than merge accounts
+            throw new AuthenticationError(
+                "An account with this email exists; verify the email at your identity provider first",
+                Map.of("reason", "email_unverified"));
+        }
+        User created = users.insertOidc(email, displayName, provider, subject);
+        audit.log(Events.USER_REGISTERED, null, created.id(), null, null, Map.of("via", provider));
+        return created;
+    }
+
+    private static String firstNonEmpty(Object... candidates) {
+        for (Object candidate : candidates) {
+            if (candidate != null && !String.valueOf(candidate).isEmpty()) {
+                return String.valueOf(candidate);
+            }
+        }
+        return "";
+    }
+
     @Transactional(readOnly = true)
     public UserWithOrgs me(UUID userId) {
         User user = users.findById(userId).orElseThrow(() -> new UserNotFoundError("User not found"));
@@ -216,6 +283,12 @@ public class IdentityService {
     // ── Internals ────────────────────────────────────────────────────────────────
 
     private record IssuedTokens(TokenPair pair, UUID refreshRowId) {}
+
+    /** The OIDC callback issues the same pair as a password login. */
+    @Transactional
+    public TokenPair issueTokensFor(User user, String userAgent, String ip) {
+        return issueTokens(user, null, userAgent, ip);
+    }
 
     private TokenPair issueTokens(User user, UUID organizationId, String userAgent, String ip) {
         return issue(user, organizationId, userAgent, ip).pair();

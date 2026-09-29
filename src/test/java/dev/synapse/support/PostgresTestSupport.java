@@ -21,9 +21,10 @@ public abstract class PostgresTestSupport {
 
     /**
      * The journeys register dozens of users from one address; the per-IP and
-     * per-identity auth limits would trip long before the assertions do. A
-     * subclass that tests the limiter registers its own (lower) values — the
-     * later registration for a key wins.
+     * per-identity auth limits would trip long before the assertions do. The
+     * test that exercises the limiter registers the database itself (through
+     * {@link #registerDatasource}) instead of extending this class, so its own
+     * low limits are the only ones in play.
      */
     @DynamicPropertySource
     static void authRateLimits(DynamicPropertyRegistry registry) {
@@ -33,6 +34,17 @@ public abstract class PostgresTestSupport {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
+        registerDatasource(registry);
+    }
+
+    /** {@code SYNAPSE_TEST_JDBC_URL} or a Testcontainers Postgres, shared per JVM. */
+    public static void registerDatasource(DynamicPropertyRegistry registry) {
+        // Spring caches one context per distinct property set and the suite has a dozen;
+        // a lean, quickly-drained pool keeps them all inside one Postgres' max_connections
+        // (the scratch server is shared with the other ports).
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> 5);
+        registry.add("spring.datasource.hikari.minimum-idle", () -> 0);
+        registry.add("spring.datasource.hikari.idle-timeout", () -> 10_000);
         if (EXTERNAL_URL != null && !EXTERNAL_URL.isBlank()) {
             registry.add("spring.datasource.url", () -> EXTERNAL_URL);
             registry.add("spring.datasource.username", () -> env("SYNAPSE_TEST_DB_USER", "synapse"));

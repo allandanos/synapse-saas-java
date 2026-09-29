@@ -50,6 +50,32 @@ public class UserRepository {
         return findById(id).orElseThrow();
     }
 
+    /** The stable OIDC link: one row per (provider, subject). */
+    public Optional<User> findByProviderSubject(String provider, String subject) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM users WHERE identity_provider = :provider AND provider_subject = :subject")
+            .param("provider", provider).param("subject", subject).query(MAPPER).optional();
+    }
+
+    /** An SSO-only account: no local password hash, so {@code /auth/login} answers 401 with an sso_url. */
+    public User insertOidc(String email, String displayName, String provider, String subject) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO users (id, email, password_hash, display_name, is_platform_admin, is_active,
+                                   identity_provider, provider_subject)
+                VALUES (:id, CAST(:email AS citext), NULL, :displayName, false, true, :provider, :subject)
+                """)
+            .param("id", id).param("email", email).param("displayName", displayName)
+            .param("provider", provider).param("subject", subject)
+            .update();
+        return findById(id).orElseThrow();
+    }
+
+    /** Link an existing (verified-email) account to the identity provider. */
+    public void linkProvider(UUID id, String provider, String subject) {
+        jdbc.sql("UPDATE users SET identity_provider = :provider, provider_subject = :subject, updated_at = now() WHERE id = :id")
+            .param("provider", provider).param("subject", subject).param("id", id).update();
+    }
+
     public void touchLastLogin(UUID id, Instant at) {
         jdbc.sql("UPDATE users SET last_login_at = :at, updated_at = now() WHERE id = :id")
             .param("at", Rows.at(at)).param("id", id).update();

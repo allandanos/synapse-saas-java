@@ -45,6 +45,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST,
                     "/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout",
                     "/v1/auth/forgot-password", "/v1/auth/reset-password").permitAll()
+                // SSO round-trips: the browser arrives with no credential at all (ADR 0010)
+                .requestMatchers(HttpMethod.GET, "/v1/auth/oidc/start", "/v1/auth/oidc/callback").permitAll()
                 // Provider webhooks authenticate themselves by signature/token, never by bearer
                 .requestMatchers(HttpMethod.POST, "/v1/billing/webhooks/*").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()

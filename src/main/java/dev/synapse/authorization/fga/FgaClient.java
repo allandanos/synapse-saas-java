@@ -90,7 +90,7 @@ public class FgaClient {
                 post(storePath("/write"), withModel(new LinkedHashMap<>(
                     Map.of("writes", Map.of("tuple_keys", List.of(tuple.asKey()))))));
             } catch (FgaError error) {
-                if (!error.body().toLowerCase(Locale.ROOT).contains("already exists")) {
+                if (!tolerable(error, "already exists", "already existed")) {
                     throw error;
                 }
             }
@@ -100,11 +100,23 @@ public class FgaClient {
                 post(storePath("/write"), withModel(new LinkedHashMap<>(
                     Map.of("deletes", Map.of("tuple_keys", List.of(tuple.asKey()))))));
             } catch (FgaError error) {
-                if (!error.body().toLowerCase(Locale.ROOT).contains("not found")) {
+                // The reference only looks for "not found"; OpenFGA 1.x actually answers
+                // "cannot delete a tuple which does not exist" (see the README's milestone-7 notes).
+                if (!tolerable(error, "not found", "does not exist", "did not exist")) {
                     throw error;
                 }
             }
         }
+    }
+
+    private static boolean tolerable(FgaError error, String... phrases) {
+        String body = error.body().toLowerCase(Locale.ROOT);
+        for (String phrase : phrases) {
+            if (body.contains(phrase)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @SuppressWarnings("unchecked")

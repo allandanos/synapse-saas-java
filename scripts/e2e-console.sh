@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Milestone 6 — run the REFERENCE console's Playwright journeys against this port.
+# Milestones 6-7 - run the REFERENCE console's Playwright journeys against this port.
 #
 # The console and its specs are never modified: this copies apps/web out of the
 # reference repo, builds it with NEXT_PUBLIC_API_URL pointing at this server,
@@ -17,9 +17,17 @@
 #   MAILHOG_NAME     container name                 mailhog-java
 #   MAILHOG_SMTP     SMTP port                      1035
 #   MAILHOG_HTTP     JSON API port                  8035
+#   REDIS_URL        caches, rate limits, OIDC state  redis://localhost:6390/0
+#   KEYCLOAK         1 boots Keycloak and runs sso.spec.ts    0
+#   KEYCLOAK_NAME    container name                 keycloak-java
+#   KEYCLOAK_PORT    host port                      8180
 #   RESET_DB         drop + recreate before seeding 1
 #   KEEP_STACK       leave server/console/MailHog up on exit  0
 #   SPECS            playwright arguments           (all)
+#
+# Modes:
+#   ./scripts/e2e-console.sh              22 passed, sso.spec.ts skipped
+#   KEYCLOAK=1 ./scripts/e2e-console.sh   23 passed, SSO against a real Keycloak
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,6 +41,12 @@ JDBC_URL="${JDBC_URL:-jdbc:postgresql://[::1]:5434/$PG_DATABASE}"
 MAILHOG_NAME="${MAILHOG_NAME:-mailhog-java}"
 MAILHOG_SMTP="${MAILHOG_SMTP:-1035}"
 MAILHOG_HTTP="${MAILHOG_HTTP:-8035}"
+REDIS_URL="${REDIS_URL:-redis://localhost:6390/0}"
+KEYCLOAK="${KEYCLOAK:-0}"
+KEYCLOAK_NAME="${KEYCLOAK_NAME:-keycloak-java}"
+KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
+KEYCLOAK_REALM_DIR="${KEYCLOAK_REALM_DIR:-${TMPDIR:-/tmp}/synapse-keycloak-java}"
 RESET_DB="${RESET_DB:-1}"
 KEEP_STACK="${KEEP_STACK:-0}"
 JAR="$ROOT/target/synapse-saas-0.1.0-SNAPSHOT.jar"
@@ -60,6 +74,9 @@ cleanup() {
     lsof -ti "tcp:$port" 2>/dev/null | xargs -r kill 2>/dev/null || true
   done
   docker rm -f "$MAILHOG_NAME" >/dev/null 2>&1 || true
+  if [ "$KEYCLOAK" = "1" ]; then
+    docker rm -f "$KEYCLOAK_NAME" >/dev/null 2>&1 || true
+  fi
   return $status
 }
 trap cleanup EXIT
@@ -99,6 +116,30 @@ export SYNAPSE_SMTP_FROM=billing@synapse.test
 export SYNAPSE_BILLING_PROVIDER=manual
 export SYNAPSE_AUTO_SYNC_PLANS=true
 export SYNAPSE_STORAGE_ROOT="${SYNAPSE_STORAGE_ROOT:-$ROOT/.storage}"
+export SYNAPSE_REDIS_URL="$REDIS_URL"
+# The journeys register dozens of users from one address (what the reference's
+# own e2e workflows do); the shipped 20/IP and 5/identity would trip first.
+export SYNAPSE_AUTH_RATE_LIMIT_PER_IP="${SYNAPSE_AUTH_RATE_LIMIT_PER_IP:-1000}"
+export SYNAPSE_AUTH_RATE_LIMIT_PER_IDENTITY="${SYNAPSE_AUTH_RATE_LIMIT_PER_IDENTITY:-100}"
+
+if [ "$KEYCLOAK" = "1" ]; then
+  step "Keycloak ($KEYCLOAK_NAME on :$KEYCLOAK_PORT, realm synapse)"
+  mkdir -p "$KEYCLOAK_REALM_DIR"
+  python3 "$ROOT/scripts/keycloak-realm.py" "$REF/infrastructure/keycloak/realm-dev.json" \
+    "$KEYCLOAK_REALM_DIR/realm-dev.json" "http://localhost:$API_PORT" "http://localhost:$CONSOLE_PORT"
+  docker rm -f "$KEYCLOAK_NAME" >/dev/null 2>&1 || true
+  docker run -d --name "$KEYCLOAK_NAME" -p "$KEYCLOAK_PORT:8080" \
+    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+    -v "$KEYCLOAK_REALM_DIR:/opt/keycloak/data/import:ro" \
+    "$KEYCLOAK_IMAGE" start-dev --import-realm --http-port=8080 >/dev/null
+  wait_for "http://localhost:$KEYCLOAK_PORT/realms/synapse/.well-known/openid-configuration" Keycloak
+
+  export SYNAPSE_IDENTITY_PROVIDER=keycloak
+  export SYNAPSE_KEYCLOAK_BASE_URL="http://localhost:$KEYCLOAK_PORT"
+  export SYNAPSE_KEYCLOAK_REALM=synapse
+  export SYNAPSE_KEYCLOAK_CLIENT_ID=synapse-web
+  export SYNAPSE_KEYCLOAK_CLIENT_SECRET=dev-client-secret
+fi
 
 step "seed (system catalog, plans, dev org)"
 # Command substitution, not a pipe: a failing seed must fail the run, and the
@@ -128,4 +169,5 @@ cd "$CONSOLE_DIR"
 E2E_BASE_URL="http://localhost:$CONSOLE_PORT" \
 E2E_API_URL="http://localhost:$API_PORT" \
 MAILHOG_API_URL="http://localhost:$MAILHOG_HTTP" \
+E2E_KEYCLOAK="$KEYCLOAK" \
   pnpm exec playwright test ${SPECS:-}

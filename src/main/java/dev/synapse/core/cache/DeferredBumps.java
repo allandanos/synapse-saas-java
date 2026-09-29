@@ -43,6 +43,14 @@ public final class DeferredBumps {
 
     private static final class Flush implements TransactionSynchronization {
 
+        /** After the OpenFGA converge, so a bump is never undone by a later write. */
+        public static final int ORDER = 200;
+
+        @Override
+        public int getOrder() {
+            return ORDER;
+        }
+
         @Override
         @SuppressWarnings("unchecked")
         public void afterCommit() {
