@@ -58,10 +58,17 @@ public record SynapseProperties(
     @DefaultValue("") String smtpUsername,
     @DefaultValue("") String smtpPassword,
     @Pattern(regexp = "none|starttls|ssl") @DefaultValue("none") String smtpTls,
+    // ── Storage (S3-compatible; unset bucket ⇒ local disk under storageRoot)
+    @DefaultValue("") String s3EndpointUrl,
+    @DefaultValue("us-east-1") String s3Region,
+    @DefaultValue("") String s3Bucket,
+    @DefaultValue("") String s3AccessKeyId,
+    @DefaultValue("") String s3SecretAccessKey,
+    @DefaultValue(".storage") String storageRoot,
     // ── Worker
     @DefaultValue("true") boolean workerEnabled,
     @Min(1) @DefaultValue("365") int auditRetentionDays,
-    @Min(1) @DefaultValue("900") int storagePresignSeconds
+    @Min(1) @DefaultValue("3600") int storagePresignSeconds
 ) {
     public static final String DEV_SECRET_PREFIX = "dev-only-";
 

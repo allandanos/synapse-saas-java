@@ -24,6 +24,7 @@ import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /**
@@ -126,6 +127,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             HttpMediaTypeNotSupportedException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         return validation(List.of(new ValidationErrors.FieldProblem(List.of("body"),
             "Input should be a valid dictionary or object to extract fields from", "model_attributes_type")), request);
+    }
+
+    /** An upload past the container's multipart ceiling is the reference's 400 {@code storage_error}, not a 413. */
+    @Override
+    protected ResponseEntity<Object> handleMaxUploadSizeExceededException(
+            MaxUploadSizeExceededException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+            .body(ProblemDocument.build(400, "storage_error", "Direct upload capped at 10 MiB; use presigned upload",
+                path(request), requestId(request), Map.of()));
     }
 
     @Override

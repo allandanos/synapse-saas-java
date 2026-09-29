@@ -20,6 +20,12 @@ spring:
     default-property-inclusion: always
     serialization:
       write-dates-as-timestamps: false
+  servlet:
+    multipart:
+      # The 10 MiB direct-upload cap is enforced in code (the reference's 400 storage_error,
+      # not the container's 413), so the container limit sits just above it.
+      max-file-size: 12MB
+      max-request-size: 16MB
   mvc:
     problemdetails:
       enabled: false   # problem documents are rendered by dev.synapse.core.problem (application/json, reference shape)
@@ -81,10 +87,17 @@ synapse:
   smtp-username: ${SYNAPSE_SMTP_USERNAME:}
   smtp-password: ${SYNAPSE_SMTP_PASSWORD:}
   smtp-tls: ${SYNAPSE_SMTP_TLS:none}
+  # Storage: any S3-compatible bucket (AWS, R2, MinIO) when SYNAPSE_S3_BUCKET is set, local disk otherwise
+  s3-endpoint-url: ${SYNAPSE_S3_ENDPOINT_URL:}
+  s3-region: ${SYNAPSE_S3_REGION:us-east-1}
+  s3-bucket: ${SYNAPSE_S3_BUCKET:}
+  s3-access-key-id: ${SYNAPSE_S3_ACCESS_KEY_ID:}
+  s3-secret-access-key: ${SYNAPSE_S3_SECRET_ACCESS_KEY:}
+  storage-root: ${SYNAPSE_STORAGE_ROOT:.storage}
   # Worker: the cron jobs run in-process with the API unless this is off
   worker-enabled: ${SYNAPSE_WORKER_ENABLED:true}
   audit-retention-days: ${SYNAPSE_AUDIT_RETENTION_DAYS:365}
-  storage-presign-seconds: ${SYNAPSE_STORAGE_PRESIGN_SECONDS:900}
+  storage-presign-seconds: ${SYNAPSE_STORAGE_PRESIGN_SECONDS:3600}
 
 logging:
   level:

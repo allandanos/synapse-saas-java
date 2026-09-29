@@ -29,6 +29,7 @@
     <java.version>21</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <testcontainers.version>1.20.6</testcontainers.version>
+    <awssdk.version>2.29.52</awssdk.version>
   </properties>
 
   <dependencies>
@@ -84,6 +85,17 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-mail</artifactId>
     </dependency>
+    <dependency>
+      <!-- S3-compatible storage (AWS S3, Cloudflare R2, MinIO): the SDK's own SigV4 presigner
+           instead of a hand-rolled one. Netty is excluded; the sync Apache client is enough. -->
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>${awssdk.version}</version>
+      <exclusions>
+        <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>netty-nio-client</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+
     <dependency>
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-core</artifactId>
