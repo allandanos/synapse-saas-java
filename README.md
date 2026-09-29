@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@1184245` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@295672b` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -220,9 +220,6 @@ Behaviour a client can distinguish, kept deliberately:
 - Any unexpected unique-constraint violation (not the invite-email and
   role-key cases, which the contract now answers with 409) is a 409
   `conflict` problem instead of a 500.
-- `GET /v1/usage/summary?period=2026-13` (matches the `YYYY-MM` pattern but
-  is not a month) is a 422 `validation_failed`; the reference raises from
-  `strptime` and answers 500.
 - API-key metering of `api_requests` runs in its own short transaction right
   after authentication (the reference uses a savepoint inside the request
   transaction); the observable contract — a metering failure never fails the

@@ -2,6 +2,7 @@ package dev.synapse.usage;
 
 import dev.synapse.core.context.TenantContext;
 import dev.synapse.core.errors.ValidationFailedError;
+import dev.synapse.core.validation.Periods;
 import dev.synapse.core.web.RequireTenant;
 import dev.synapse.entitlements.EntitlementResolver.EffectiveEntitlements;
 import dev.synapse.entitlements.EntitlementService;
@@ -16,8 +17,6 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.YearMonth;
-import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -94,7 +93,7 @@ public class UsageController {
     /** One entitlement resolution for the whole summary (not one per metric). */
     @GetMapping("/summary")
     @RequireTenant
-    public UsageSummaryOut summary(TenantContext tenant, @RequestParam(required = false) @Pattern(regexp = "^\\d{4}-\\d{2}$") String period) {
+    public UsageSummaryOut summary(TenantContext tenant, @RequestParam(required = false) @Pattern(regexp = Periods.MONTH_PATTERN) String period) {
         LocalDate periodDate = parsePeriod(period);
         List<Map<String, Object>> rows = usage.summary(tenant.organizationId(), periodDate);
         EffectiveEntitlements effective = entitlements.effectiveForOrg(tenant.organizationId());
@@ -105,14 +104,6 @@ public class UsageController {
     }
 
     private static LocalDate parsePeriod(String period) {
-        if (period == null) {
-            return null;
-        }
-        try {
-            return YearMonth.parse(period).atDay(1);
-        } catch (DateTimeParseException e) {
-            throw new ValidationFailedError("Invalid request: period", Map.of("errors", List.of(
-                Map.of("loc", List.of("query", "period"), "msg", "Input should be a valid YYYY-MM period", "type", "value_error"))));
-        }
+        return Periods.firstDay(period, "query", "period");
     }
 }
