@@ -101,7 +101,10 @@ export SYNAPSE_AUTO_SYNC_PLANS=true
 export SYNAPSE_STORAGE_ROOT="${SYNAPSE_STORAGE_ROOT:-$ROOT/.storage}"
 
 step "seed (system catalog, plans, dev org)"
-java -jar "$JAR" --seed-dev | tail -1
+# Command substitution, not a pipe: a failing seed must fail the run, and the
+# summary line is the only part of the boot log worth showing.
+seed_output="$(java -jar "$JAR" --seed-dev)"
+grep -E "^dev seed" <<<"$seed_output" || true
 
 step "server on :$API_PORT (worker in-process: outbox dispatch every 5s)"
 java -jar "$JAR" --server.port="$API_PORT" > "$API_LOG" 2>&1 &
