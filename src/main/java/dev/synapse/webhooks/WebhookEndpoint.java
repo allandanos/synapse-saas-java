@@ -1,5 +1,6 @@
 package dev.synapse.webhooks;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -8,7 +9,7 @@ import java.util.UUID;
  * {@code secretEncrypted} is a Fernet token (see {@link FernetCodec}).
  */
 public record WebhookEndpoint(UUID id, UUID organizationId, String url, byte[] secretEncrypted, String description,
-                              List<String> events, boolean active) {
+                              List<String> events, boolean active, Instant createdAt) {
 
     public WebhookEndpoint {
         secretEncrypted = secretEncrypted.clone();

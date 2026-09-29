@@ -3,6 +3,8 @@ package dev.synapse.webhooks;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.synapse.billing.Signatures;
+import dev.synapse.core.errors.WebhookDeliveryNotFoundError;
+import dev.synapse.core.errors.WebhookEndpointNotFoundError;
 import dev.synapse.core.ids.Secrets;
 import dev.synapse.core.metrics.FrameworkMetrics;
 import java.io.IOException;
@@ -75,6 +77,41 @@ public class WebhookDeliveryService {
     }
 
     public record Created(UUID endpointId, String secret) {}
+
+    @Transactional(readOnly = true)
+    public List<WebhookEndpoint> listEndpoints(UUID organizationId) {
+        return endpoints.listForOrganization(organizationId);
+    }
+
+    /** Cross-tenant and unknown ids are the same 404 — existence is never leaked. */
+    @Transactional(readOnly = true)
+    public WebhookEndpoint getEndpoint(UUID endpointId, UUID organizationId) {
+        return endpoints.findById(endpointId)
+            .filter(e -> e.organizationId().equals(organizationId))
+            .orElseThrow(() -> new WebhookEndpointNotFoundError("Webhook endpoint not found"));
+    }
+
+    @Transactional
+    public void deleteEndpoint(UUID endpointId, UUID organizationId) {
+        WebhookEndpoint endpoint = getEndpoint(endpointId, organizationId);
+        endpoints.delete(endpoint.id()); // deliveries cascade with the endpoint
+    }
+
+    @Transactional(readOnly = true)
+    public Page listDeliveries(UUID organizationId, UUID endpointId, int limit, int offset) {
+        return new Page(deliveries.page(organizationId, endpointId, limit, offset), deliveries.count(organizationId, endpointId));
+    }
+
+    public record Page(List<WebhookDelivery> rows, long total) {}
+
+    /** Requeue a delivery: pending, attempts back to zero, due now. */
+    @Transactional
+    public WebhookDelivery retryDelivery(UUID deliveryId, UUID organizationId) {
+        WebhookDelivery delivery = deliveries.findForOrg(deliveryId, organizationId)
+            .orElseThrow(() -> new WebhookDeliveryNotFoundError("Delivery not found"));
+        deliveries.resetForRetry(delivery.id(), Instant.now());
+        return deliveries.findById(delivery.id()).orElseThrow();
+    }
 
     /** Attempt one delivery. Returns success; state changes are persisted here. */
     @Transactional

@@ -42,6 +42,38 @@ public class WebhookDeliveryRepository {
             .param("org", organizationId).param("limit", limit).query(mapper).list();
     }
 
+    public Optional<WebhookDelivery> findForOrg(UUID id, UUID organizationId) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_deliveries WHERE id = :id AND organization_id = :org")
+            .param("id", id).param("org", organizationId).query(mapper).optional();
+    }
+
+    /** One page of an org's deliveries, newest first, optionally narrowed to one endpoint. */
+    public List<WebhookDelivery> page(UUID organizationId, UUID endpointId, int limit, int offset) {
+        return jdbc.sql("SELECT " + COLUMNS + """
+                 FROM webhook_deliveries
+                 WHERE organization_id = :org AND (CAST(:endpoint AS uuid) IS NULL OR endpoint_id = CAST(:endpoint AS uuid))
+                 ORDER BY created_at DESC
+                 LIMIT :limit OFFSET :offset
+                """)
+            .param("org", organizationId).param("endpoint", endpointId == null ? null : endpointId.toString())
+            .param("limit", limit).param("offset", offset).query(mapper).list();
+    }
+
+    public long count(UUID organizationId, UUID endpointId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM webhook_deliveries
+                WHERE organization_id = :org AND (CAST(:endpoint AS uuid) IS NULL OR endpoint_id = CAST(:endpoint AS uuid))
+                """)
+            .param("org", organizationId).param("endpoint", endpointId == null ? null : endpointId.toString())
+            .query(Long.class).single();
+    }
+
+    /** Requeue: back to pending with a clean attempt ladder, due now. */
+    public void resetForRetry(UUID id, Instant at) {
+        jdbc.sql("UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = :at WHERE id = :id")
+            .param("id", id).param("at", Rows.at(at)).update();
+    }
+
     /** Due pending deliveries, claimed for this transaction only. */
     public List<UUID> claimDue(int limit) {
         return jdbc.sql("""

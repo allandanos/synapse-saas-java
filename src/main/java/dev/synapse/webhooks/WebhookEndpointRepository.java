@@ -12,12 +12,12 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class WebhookEndpointRepository {
 
-    private static final String COLUMNS = "id, organization_id, url, secret_encrypted, description, events, is_active";
+    private static final String COLUMNS = "id, organization_id, url, secret_encrypted, description, events, is_active, created_at";
 
     private final JdbcClient jdbc;
     private final RowMapper<WebhookEndpoint> mapper = (rs, i) -> new WebhookEndpoint(
         Rows.uuid(rs, "id"), Rows.uuid(rs, "organization_id"), rs.getString("url"), rs.getBytes("secret_encrypted"),
-        rs.getString("description"), Rows.strings(rs, "events"), rs.getBoolean("is_active"));
+        rs.getString("description"), Rows.strings(rs, "events"), rs.getBoolean("is_active"), Rows.instant(rs, "created_at"));
 
     public WebhookEndpointRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
@@ -25,6 +25,16 @@ public class WebhookEndpointRepository {
 
     public Optional<WebhookEndpoint> findById(UUID id) {
         return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_endpoints WHERE id = :id").param("id", id).query(mapper).optional();
+    }
+
+    /** Endpoints of one org, oldest first. The secret column is read but never serialised. */
+    public List<WebhookEndpoint> listForOrganization(UUID organizationId) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM webhook_endpoints WHERE organization_id = :org ORDER BY created_at, id")
+            .param("org", organizationId).query(mapper).list();
+    }
+
+    public void delete(UUID id) {
+        jdbc.sql("DELETE FROM webhook_endpoints WHERE id = :id").param("id", id).update();
     }
 
     /** Active endpoints of the org subscribed to the type — an empty filter means "all". */
