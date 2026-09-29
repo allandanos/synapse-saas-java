@@ -6,7 +6,7 @@ suite live in [`synapse-saas`](../synapse-saas) — see its
 [ADR 0012](../synapse-saas/docs/adr/0012-polyglot-ports-contract-first.md) and
 [porting guide](../synapse-saas/ports/README.md).
 
-**Contract pinned at:** `synapse-saas@cd55a53` (`contracts/` is a snapshot of
+**Contract pinned at:** `synapse-saas@6272ab3` (`contracts/` is a snapshot of
 that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entry).
 
 ## Status
@@ -15,21 +15,18 @@ that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entr
 |---|---|---|
 | 1 | pure logic + core + probes/`/v1/meta` | **done** — problem documents for every error, request context + `X-Request-Id`, RLS GUCs, transactional outbox + audit writers, Flyway baseline |
 | 2 | identity, tenancy, authorization (RBAC), API keys | **done** — `test_meta_and_health`, `test_auth`, `test_tenancy`, `test_authorization`, `test_api_keys` pass |
-| 3 | subscriptions, entitlements, usage | **done** — plan catalog (`plans.yaml` → validated → synced at boot), default `free` subscription, trial/change/cancel/resume with the state machine and arrears proration, entitlement resolver + operator grants, counters/gauges/idempotency/atomic enforcement, `api_requests` metering of key auth, `users` seat gauge + invite cap. `test_subscriptions`, `test_usage_and_entitlements` and `test_api_keys` pass — except `test_feature_gate_problem_shape`, which needs `GET /v1/agents` (milestone 5) |
+| 3 | subscriptions, entitlements, usage | **done** — plan catalog (`plans.yaml` → validated → synced at boot), default `free` subscription, trial/change/cancel/resume with the state machine and arrears proration, entitlement resolver + operator grants, counters/gauges/idempotency/atomic enforcement, `api_requests` metering of key auth, `users` seat gauge + invite cap. `test_subscriptions`, `test_usage_and_entitlements` and `test_api_keys` pass |
 | 4 | billing providers, invoicing, notifications, worker | **done** — five providers behind one capability table (manual, Stripe, Paddle, Xendit, PayMongo) with real HTTP clients and webhook verification, checkout/confirm/portal, framework-native invoicing (draft → finalize → pay/void, overage + proration lines, PDFs), spend/revenue reports, signed provider-webhook ingest with an idempotency ledger, the outbox dispatcher + signed outbound deliveries (Fernet-encrypted endpoint secrets), SMTP notifications, and the seven cron jobs in-process or standalone. `test_billing` passes |
-| 5 | webhooks, files, flags, audit, agents | — |
+| 5 | webhooks, files, flags, audit, agents | **done** — webhook endpoint management + the delivery log + retry over the milestone-4 engine, org-scoped files on local disk or any S3-compatible bucket (direct multipart, presigned PUT/GET, the `storage_bytes` gauge both ways), feature flags with deterministic percentage rollouts and org/user overrides, the audit read route, and the agent registry behind the `agents` entitlement. **The entire `tests/conformance` suite passes** |
 | 6 | console parity (Playwright) | — |
 | 7 | OIDC + OpenFGA, hardening | — |
 
 A milestone is done when the corresponding `tests/conformance` modules pass
-against this server (`make conformance`).
+against this server. `make conformance` runs the **whole** suite — as of
+milestone 5 every module passes, with nothing deselected.
 
 ### Deliberately left for later milestones
 
-- Webhook **management** routes (`/v1/webhooks/endpoints`, deliveries, retry)
-  and the files/flags/audit/agents surfaces (milestone 5). The delivery engine
-  itself is done: endpoints inserted directly are fanned out to and signed, and
-  `WebhookDeliveryService.createEndpoint` already mints and encrypts secrets.
 - Redis-backed permission/membership/entitlement caches and the auth rate
   limiter (`core/cache`, `core/rate_limit`): every check reads Postgres
   directly; `EntitlementCache` is the drop-in seam. `/readyz` reports
@@ -37,14 +34,13 @@ against this server (`make conformance`).
 - The OpenFGA tuple-sync consumer the outbox dispatcher leaves room for
   (milestone 7), and Stripe plan sync from the CLI
   (`StripeBillingProvider.upsertProductAndPrice` exists, nothing calls it yet).
-- `GET /v1/agents` and the other feature-gated routes (milestone 5) — the
-  gate itself (`@RequireFeature`, `FeatureGate`) is in place.
 - OIDC login and OpenFGA (milestone 7). SSO-only users get the reference's
   401 `sso_url` problem from `/v1/auth/login`, but `/v1/auth/oidc/*` does not exist yet.
 
 ## Stack
 
-Spring Boot 3.4 (Web, Validation, Security, JDBC, Actuator) · `JdbcClient` +
+Spring Boot 3.4 (Web, Validation, Security, JDBC, Actuator) · AWS SDK v2 `s3`
+(S3-compatible storage + its SigV4 presigner) · `JdbcClient` +
 records over the fixed baseline schema · Flyway (`V1__baseline.sql` =
 `contracts/schema-v1.sql`; later Alembic migrations are mirrored as SQL) ·
 Spring Security's `Argon2PasswordEncoder` (argon2id, same parameters and
@@ -70,7 +66,7 @@ make run              # against the reference dev stack's Postgres on :5433
 make run-pg           # :8080 against the scratch DB with a bootstrapped operator (what `make conformance` expects)
 make worker           # the standalone worker: cron jobs, no web server
 make jobs-run-once    # every job once, printing `name: count` (JOBS="dispatch_outbox purge_expired" for a subset)
-make conformance      # reference suite (milestone 1–4 modules) → http://localhost:8080
+make conformance      # the reference's WHOLE suite (every module, no exclusions) → http://localhost:8080
 ```
 
 Boot with the packaged jar:
@@ -79,6 +75,7 @@ Boot with the packaged jar:
 SYNAPSE_JDBC_URL=jdbc:postgresql://localhost:5434/synapse_java \
 SYNAPSE_BOOTSTRAP_ADMIN_EMAIL=operator@platform.example.com \
 SYNAPSE_BOOTSTRAP_ADMIN_PASSWORD=operator-password-12345 \
+SYNAPSE_STORAGE_ROOT=.storage \
 java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar
 ```
 
@@ -104,7 +101,7 @@ The seven maintenance jobs run **in-process with the API** by default
 | `expire_entitlements` | hourly at :10 | revoke lapsed grants, emit `entitlement.expired`, invalidate caches |
 | `advance_recurring_billing` | hourly at :20 | for locally billed providers: invoice the ENDED period through the invoicing engine, then roll the period forward |
 | `ensure_partitions` | daily 03:30 | pre-create `usage_events_yYYYYmMM` three months ahead |
-| `purge_expired` | daily 03:40 | retention: deliveries 30 d (exhausted 90 d), outbox 7 d, idempotency keys 90 d, audit logs `SYNAPSE_AUDIT_RETENTION_DAYS` |
+| `purge_expired` | daily 03:40 | retention: deliveries 30 d (exhausted 90 d), outbox 7 d, idempotency keys 90 d, audit logs `SYNAPSE_AUDIT_RETENTION_DAYS`; abandoned presigned uploads are soft-deleted and their reserved bytes released after twice `SYNAPSE_STORAGE_PRESIGN_SECONDS` |
 
 Coordination needs **no extra table**: every tick takes
 `pg_try_advisory_lock(hashtext('job:<name>'))` on its own connection and skips
@@ -218,7 +215,12 @@ Same names and defaults as the reference wherever the concept exists
 | `SYNAPSE_MANUAL_PAY_TO_INSTRUCTIONS` | empty | payment instructions printed on unpaid invoice PDFs and mailed with them |
 | `SYNAPSE_WORKER_ENABLED` | `true` | run the seven cron jobs in-process with the API |
 | `SYNAPSE_AUDIT_RETENTION_DAYS` | `365` | `purge_expired` deletes `audit_logs` older than this |
-| `SYNAPSE_STORAGE_PRESIGN_SECONDS` | `900` | `purge_expired` reclaims presigned uploads never completed after twice this |
+| `SYNAPSE_S3_BUCKET` | unset | set ⇒ the S3-compatible backend; unset ⇒ local disk under `SYNAPSE_STORAGE_ROOT` |
+| `SYNAPSE_S3_ENDPOINT_URL` | unset | MinIO / Cloudflare R2 (forces path-style addressing); empty ⇒ AWS |
+| `SYNAPSE_S3_REGION` | `us-east-1` | |
+| `SYNAPSE_S3_ACCESS_KEY_ID` / `SYNAPSE_S3_SECRET_ACCESS_KEY` | unset | unset ⇒ the SDK's default credential chain |
+| `SYNAPSE_STORAGE_ROOT` | `.storage` | local-disk root; keys are always `{org_id}/…` |
+| `SYNAPSE_STORAGE_PRESIGN_SECONDS` | `3600` | presigned URL lifetime; `purge_expired` reclaims presigned uploads never completed after twice this |
 | `SYNAPSE_NOTIFIER` | `smtp` | `noop` logs instead of sending |
 | `SYNAPSE_SMTP_HOST` / `_PORT` / `_FROM` / `_USERNAME` / `_PASSWORD` | unset / `1025` / `synapse@localhost` / unset | empty host ⇒ every send is logged and dropped |
 | `SYNAPSE_SMTP_TLS` | `none` | `none` \| `starttls` \| `ssl`; AUTH over a plaintext channel is refused |
@@ -236,7 +238,12 @@ Same names and defaults as the reference wherever the concept exists
   line reconciliation, the worker's batch, backoff and retention constants, the
   event audience, Fernet round-trips **plus a token written by the reference's
   `cryptography`**, and the provider HTTP clients against a local
-  `StubProviderServer`).
+  `StubProviderServer`; and the milestone-5 ones: the flag bucketing/rollout
+  matrix with two bucket values pinned against the reference's `bucket_of`,
+  storage key validation + org scoping + the local backend, the S3 presigned
+  URL shape (path style for a custom endpoint, virtual-host for AWS), webhook
+  endpoint URL validation, and the event vocabulary checked against
+  `contracts/events.json`).
 - `@SpringBootTest` journeys over a real Postgres: `ApiJourneyTest` (register →
   org → invite → accept → roles → API keys → operator suspension, and the
   problem-document contract), `BillingJourneyTest` (catalog → free plan →
@@ -254,10 +261,34 @@ Same names and defaults as the reference wherever the concept exists
   never fanned out, endpoint filters, the delivery ladder to `exhausted`, a
   poison outbox row dead-lettered on the eighth attempt, partition
   pre-creation, every retention window, and the invite/reset/invoice emails
-  captured by an in-process GreenMail with the invoice PDF attached).
+  captured by an in-process GreenMail with the invoice PDF attached),
+  `RegistryJourneyTest` (the agent registry invisible without its entitlement
+  then full CRUD + a slug that stays taken after a delete, webhook endpoint
+  creation showing its secret exactly once and never again with the
+  `webhook.endpoint_created`/`_deleted` events and audit rows, a real outbox
+  event producing a delivery that retry requeues, flags resolving user → org →
+  global with rollouts and the operator-only surface answering 404 to tenants,
+  and the audit route's filters, limits and API-key attribution),
+  `StorageJourneyTest` (upload → list → download bytes → gauge up → delete →
+  gauge down with the `file.uploaded`/`file.deleted` events and audit rows, the
+  quota refusing an upload before a byte is written, the multipart rules and
+  the 10 MiB cap, presign 409 on local disk, and the retention job releasing
+  abandoned reservations) and `S3StorageJourneyTest` (the same surface against
+  MinIO: presign-upload → the client's own PUT → complete → ready, and
+  completing without a PUT answering 409 with the reservation released).
 - The journeys use Testcontainers (`pgvector/pgvector:pg17` — the baseline
   needs `vector` and `citext`) unless `SYNAPSE_TEST_JDBC_URL` points at an
-  existing scratch database (`make test-pg`).
+  existing scratch database (`make test-pg`). `S3StorageJourneyTest` does the
+  same for MinIO: `SYNAPSE_TEST_S3_ENDPOINT` (plus
+  `SYNAPSE_TEST_S3_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY`) points at a running
+  one, otherwise Testcontainers starts `quay.io/minio/minio`; with neither, its
+  two tests skip and the local-disk journey still covers the rest.
+
+```bash
+docker run -d --name minio -p 9010:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio12345 \
+  quay.io/minio/minio server /data
+SYNAPSE_TEST_S3_ENDPOINT=http://localhost:9010 SYNAPSE_TEST_JDBC_URL=jdbc:postgresql://[::1]:5434/synapse_java_test mvn test
+```
 
 ## Layout
 
@@ -273,7 +304,8 @@ src/main/java/dev/synapse/
     outbox/        Events vocabulary + OutboxWriter (same transaction, audience public|internal)
     audit/         AuditService (actor resolution incl. API-key attribution)
     security/      Spring Security chain, BearerAuthenticationFilter (JWT | sk_ key), Principal
-    web/           @RequirePermission / @RequireTenant / @PlatformAdminOnly + AccessInterceptor, argument resolvers
+    web/           @RequirePermission / @RequireTenant / @RequireFeature / @RequireFlag / @PlatformAdminOnly +
+                   AccessInterceptor (class- or method-level), argument resolvers
     ids/, pagination/, validation/
   identity/        users, refresh + reset tokens, PasswordHasher, JwtCodec, IdentityService, AuthController
   tenancy/         organizations, memberships, TenantResolver (X-Org-Id → X-Org-Slug → subdomain → JWT org), controllers
@@ -286,7 +318,14 @@ src/main/java/dev/synapse/
                    BillingService (customers, checkout, portal, plan change), /v1/billing,
                    invoicing/ (Invoice + lines, transitions, numbering, InvoicingService, InvoicePdf, routes),
                    reporting/ (spend + revenue read models), webhooks/ (raw-body ingest + provider_webhook_events ledger)
-  webhooks/        WebhookEndpoint/Delivery repositories, FernetCodec (secrets at rest), WebhookDeliveryService (envelope + signature)
+  webhooks/        WebhookEndpoint/Delivery repositories, FernetCodec (secrets at rest), WebhookDeliveryService (envelope +
+                   signature, endpoint CRUD, retry), WebhookUrls (HttpUrl validation), /v1/webhooks
+  storage/         StorageBackend + LocalDiskStorage | S3Storage (AWS SDK v2 presigner), StorageKeys ({org_id}/… + traversal
+                   guard), StoredFileRepository, FileService (gauge-first ordering, complete/release), /v1/files
+  featureflags/    FlagBuckets (sha256 bucketing), FeatureFlagService (user → org → global), FlagGate (@RequireFlag),
+                   /v1/feature-flags (operator CRUD + overrides) and /check/{key}
+  agents/          Agent registry (ADR 0007): repository, service (events + audit), /v1/agents behind @RequireFeature("agents")
+  audit/           AuditQueryRepository + /v1/audit (the rows core/audit writes)
   notifications/   Notifier seam, SmtpNotifier / NoopNotifier, NotificationHandlers (invite, reset, invoice, soft limit)
   worker/          Job + JobRegistry + AdvisoryLock, WorkerScheduler (@Scheduled cadences), JobsRunOnce,
                    jobs/{OutboxDispatch,DeliverWebhooks,RollupUsage,ExpireEntitlements,AdvanceRecurringBilling,EnsurePartitions,PurgeExpired}
@@ -329,5 +368,12 @@ Behaviour a client can distinguish, kept deliberately:
 - Invoice PDFs carry the same visible content as the reference's (same
   sections, same latin-1 sanitising, same money and quantity formatting) but a
   different byte layout — OpenPDF is not fpdf2.
+- Presigned S3 URLs come from the AWS SDK v2 presigner, the reference's from
+  botocore; both are SigV4 and interchangeable for a client, but the query
+  parameter order and the exact signed-header set can differ.
+- A multipart upload past the container's own ceiling is answered with the
+  reference's 400 `storage_error` rather than a 413: the 10 MiB rule is
+  enforced in code, and `MaxUploadSizeExceededException` is mapped to the same
+  problem so the answer never depends on which layer noticed first.
 
 Package coordinates: `dev.synapse:synapse-saas`. Licence: Apache-2.0.
