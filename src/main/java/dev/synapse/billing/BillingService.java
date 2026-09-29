@@ -6,9 +6,12 @@ import dev.synapse.billing.BillingRefs.CheckoutResult;
 import dev.synapse.billing.BillingRefs.CreateCheckoutRequest;
 import dev.synapse.billing.BillingRefs.CreateCustomerRequest;
 import dev.synapse.billing.BillingRefs.SubscriptionRef;
+import dev.synapse.billing.invoicing.InvoiceRepository;
 import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.core.errors.CheckoutConfirmNotAllowedError;
 import dev.synapse.core.errors.CheckoutRequiredError;
+import dev.synapse.core.outbox.Events;
+import dev.synapse.core.outbox.OutboxWriter;
 import dev.synapse.identity.User;
 import dev.synapse.identity.UserRepository;
 import dev.synapse.subscriptions.Plan;
@@ -49,14 +52,18 @@ public class BillingService {
     private final BillingProviderRegistry providers;
     private final BillingCustomerRepository customers;
     private final UserRepository users;
+    private final InvoiceRepository invoices;
+    private final OutboxWriter outbox;
     private final SynapseProperties props;
 
     public BillingService(SubscriptionService subscriptions, BillingProviderRegistry providers, BillingCustomerRepository customers,
-                          UserRepository users, SynapseProperties props) {
+                          UserRepository users, InvoiceRepository invoices, OutboxWriter outbox, SynapseProperties props) {
         this.subscriptions = subscriptions;
         this.providers = providers;
         this.customers = customers;
         this.users = users;
+        this.invoices = invoices;
+        this.outbox = outbox;
         this.props = props;
     }
 
@@ -106,8 +113,30 @@ public class BillingService {
             throw new CheckoutConfirmNotAllowedError(provider.name() + " verifies payment via its own callback; activation "
                 + "happens when the provider webhook arrives, not on client confirmation", Map.of("provider", provider.name()));
         }
-        ensureCustomer(organization, contactUserId, provider);
-        return subscriptions.changePlan(organization.id(), plan.key(), provider.name(), providerSubscriptionId, false);
+        BillingCustomer customer = ensureCustomer(organization, contactUserId, provider);
+        Subscription subscription = subscriptions.changePlan(organization.id(), plan.key(), provider.name(), providerSubscriptionId, false);
+        recordInvoice(customer, plan, provider);
+        return subscription;
+    }
+
+    /**
+     * The charge the checkout just settled, recorded as an OPEN provider invoice
+     * (reference: {@code BillingService._record_invoice}). It carries no lines —
+     * a provider's invoice shape is the provider's; the framework's own drafts
+     * come from {@code InvoicingService}. A free plan records nothing.
+     */
+    private void recordInvoice(BillingCustomer customer, Plan plan, BillingProvider provider) {
+        long priceCents = plan.priceCents() == null ? 0 : plan.priceCents();
+        if (priceCents == 0) {
+            return;
+        }
+        UUID invoiceId = invoices.insert(customer.organizationId(), customer.id(), provider.name(), plan.currency(),
+            priceCents, 0, priceCents, "open", null, null);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("total_cents", priceCents);
+        payload.put("currency", plan.currency());
+        payload.put("plan_key", plan.key());
+        outbox.append(Events.INVOICE_CREATED, "invoice", invoiceId, customer.organizationId(), payload);
     }
 
     /** {@code null} when the provider has no portal, or the org has no provider customer yet. */

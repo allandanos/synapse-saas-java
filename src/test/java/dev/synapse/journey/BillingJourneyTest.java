@@ -66,6 +66,8 @@ class BillingJourneyTest extends PostgresTestSupport {
     @Autowired BillingCustomerRepository billingCustomers;
     @Autowired dev.synapse.identity.UserRepository users;
     @Autowired ProviderHttp providerHttp;
+    @Autowired dev.synapse.billing.invoicing.InvoiceRepository invoices;
+    @Autowired dev.synapse.core.outbox.OutboxWriter outbox;
     @Autowired FeatureGate featureGate;
     @Autowired SynapseProperties props;
 
@@ -271,7 +273,7 @@ class BillingJourneyTest extends PostgresTestSupport {
                 return hosted;
             }
         };
-        BillingService billing = new BillingService(subscriptions, registry, billingCustomers, users, props);
+        BillingService billing = new BillingService(subscriptions, registry, billingCustomers, users, invoices, outbox, props);
         UUID orgId = UUID.fromString(tenant.orgId());
         // No subscription bought through the provider ⇒ the tenant must check out first
         assertThatThrownBy(() -> billing.changePlan(orgId, "pro")).isInstanceOf(CheckoutRequiredError.class)

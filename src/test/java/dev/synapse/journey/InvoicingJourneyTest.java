@@ -84,6 +84,12 @@ class InvoicingJourneyTest extends PostgresTestSupport {
         assertThat(confirm.text("plan_key")).isEqualTo("pro");
         assertThat(api.get("/v1/subscription", tenant.headers()).body().at("/subscription/plan/key").asText()).isEqualTo("pro");
         assertThat(countCustomers(tenant)).as("confirm reuses the customer").isEqualTo(1);
+        // The settled charge is recorded as an OPEN provider invoice with no lines:
+        // a provider's invoice shape is the provider's, ours is ours.
+        List<Map<String, Object>> providerInvoices = providerInvoicesOf(UUID.fromString(tenant.orgId()));
+        assertThat(providerInvoices).hasSize(1);
+        assertThat(providerInvoices.get(0).get("status")).isEqualTo("open");
+        assertThat(providerInvoices.get(0).get("number")).isEqualTo("null");
 
         // 3 — draft: the plan line comes from the purchase-time snapshot
         Res draft = api.post("/v1/billing/invoices/draft", tenant.headers(), Map.of());
@@ -143,11 +149,11 @@ class InvoicingJourneyTest extends PostgresTestSupport {
         // 7 — paid is terminal
         assertProblem(api.post("/v1/billing/admin/invoices/" + invoiceId + "/void", platform, null), 422, "validation failed");
 
-        // 8 — the reports see it
+        // 8 — the reports see both: ours paid, the provider's charge still open
         Res spend = api.get("/v1/billing/spend-summary", tenant.headers());
         assertThat(spend.body().get("paid_cents").asLong()).isEqualTo(total);
-        assertThat(spend.body().get("outstanding_cents").asLong()).isZero();
-        assertThat(spend.body().get("billed_cents").asLong()).isEqualTo(total);
+        assertThat(spend.body().get("outstanding_cents").asLong()).isEqualTo(total); // the recorded checkout charge
+        assertThat(spend.body().get("billed_cents").asLong()).isEqualTo(2 * total);
         assertThat(api.get("/v1/billing/spend-monthly", tenant.headers()).body().get(0).get("total_cents").asLong()).isEqualTo(total);
         Res revenue = api.get("/v1/billing/admin/revenue-summary", platform);
         assertThat(revenue.body().get("collected_cents").asLong()).isGreaterThanOrEqualTo(total);
@@ -377,6 +383,16 @@ class InvoicingJourneyTest extends PostgresTestSupport {
     private String audience(String eventType) {
         return jdbc.sql("SELECT audience FROM outbox_events WHERE event_type = :type LIMIT 1")
             .param("type", eventType).query(String.class).single();
+    }
+
+    /** Invoices the provider path recorded, rather than the ones we drafted. */
+    private List<Map<String, Object>> providerInvoicesOf(UUID organizationId) {
+        return jdbc.sql("SELECT id, status, number, total_cents FROM invoices WHERE organization_id = :org AND provider <> :provider "
+                + "ORDER BY created_at")
+            .param("org", organizationId).param("provider", InvoicingService.SELF_PROVIDER)
+            .query((rs, i) -> Map.<String, Object>of("id", rs.getObject("id", UUID.class).toString(), "status", rs.getString("status"),
+                "number", String.valueOf(rs.getString("number")), "total_cents", rs.getLong("total_cents")))
+            .list();
     }
 
     private List<Map<String, Object>> invoicesOf(UUID organizationId) {
