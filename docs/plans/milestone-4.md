@@ -7,7 +7,7 @@ reference disagree, the reference server wins — report the discrepancy.
 
 ## Gate
 
-`tests/conformance/test_billing.py` (7 tests) green against this server with
+`tests/conformance/test_billing.py` (6 tests) green against this server with
 `SYNAPSE_BILLING_PROVIDER=manual`, plus **no regression** in milestones 1–3
 (`test_meta_and_health`, `test_problem_documents`, `test_auth`, `test_tenancy`,
 `test_authorization`, `test_api_keys`, `test_subscriptions`,
@@ -46,8 +46,10 @@ pin: `period` inputs (`GET /v1/usage/summary?period=`, `POST
     `manual_instructions` (from `SYNAPSE_MANUAL_PAY_TO_INSTRUCTIONS`), confirm
     activates the plan, webhook ingest requires the manual token (read the
     header name in `manual_provider.py`).
-  - **stripe**: form-encoded REST (`https://api.stripe.com/v1/...`, Bearer
-    secret): customers, checkout sessions, billing-portal sessions,
+  - **stripe**: form-encoded REST (`https://api.stripe.com/v1/...`, HTTP Basic
+    with the secret key as the username and an empty password — the reference's
+    `auth=(secret_key, "")`, NOT a Bearer header): customers, checkout sessions,
+    billing-portal sessions,
     subscription item update (plan change), cancel, invoices list. Webhook:
     `Stripe-Signature: t=…,v1=…`, HMAC-SHA256 over `"{t}.{raw_body}"`,
     tolerance window, constant-time compare.
@@ -118,7 +120,9 @@ pin: `period` inputs (`GET /v1/usage/summary?period=`, `POST
   `InvoiceDetailRead` (`InvoiceRead` fields + `lines[]` of
   `InvoiceLineRead {id, kind, description, quantity, unit_amount_cents,
   amount_cents, metric}`).
-- `finalize`: lock the org row (`SELECT … FOR UPDATE`), `_next_number`
+- `finalize`: a second finalize on an already-`open` invoice is a NO-OP (same
+  number, same `issued_at`, no second `invoice.created`/`invoice.email`).
+  Otherwise: lock the org row (`SELECT … FOR UPDATE`), `_next_number`
   (read the format; unique `(organization_id, number)`), `issued_at`, status
   `open` — check what the reference does for a zero total (the conformance
   test accepts open-at-0 or paid). Emits public `invoice.created` and internal

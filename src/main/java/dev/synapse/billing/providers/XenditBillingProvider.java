@@ -16,6 +16,7 @@ import dev.synapse.billing.ProviderHttp;
 import dev.synapse.billing.Signatures;
 import dev.synapse.billing.VerifiedWebhook;
 import dev.synapse.billing.WebhookRequest;
+import dev.synapse.core.errors.BillingProviderError;
 import dev.synapse.core.errors.WebhookSignatureInvalidError;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -196,11 +197,20 @@ public final class XenditBillingProvider implements BillingProvider {
         return BigDecimal.valueOf(cents).divide(MINOR_UNITS);
     }
 
-    /** Major → minor units with exact decimal arithmetic. */
+    /**
+     * Major units as Xendit sends them ({@code "499.99"}, {@code 499.99},
+     * {@code 500}) → integer minor units, exactly. Going through a float turns
+     * 0.29 into 28 (ADR 0006), so the conversion is decimal end to end.
+     */
     static Long minorUnits(Object major) {
         if (major == null) {
             return null;
         }
-        return new BigDecimal(String.valueOf(major)).multiply(MINOR_UNITS).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
+        try {
+            return new BigDecimal(String.valueOf(major)).multiply(MINOR_UNITS)
+                .setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new BillingProviderError("Unparseable amount from Xendit: " + major);
+        }
     }
 }

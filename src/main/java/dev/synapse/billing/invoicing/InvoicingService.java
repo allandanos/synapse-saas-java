@@ -132,6 +132,10 @@ public class InvoicingService {
     @Transactional
     public Invoice finalize(UUID invoiceId, UUID organizationId) {
         Invoice invoice = scoped(invoiceId, organizationId);
+        if ("open".equals(invoice.status())) {
+            // Already finalized: keep its number and issued_at, emit nothing twice.
+            return invoice;
+        }
         InvoiceTransitions.assertTransition(invoice.status(), "open");
         invoices.lockOrganization(organizationId);
         String number = InvoiceNumbering.next(invoices.numberedCount(organizationId), Instant.now());
