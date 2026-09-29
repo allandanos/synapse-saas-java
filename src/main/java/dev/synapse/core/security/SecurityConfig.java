@@ -4,6 +4,7 @@ import dev.synapse.core.config.SynapseProperties;
 import dev.synapse.core.problem.ProblemWriter;
 import java.util.List;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -23,6 +24,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * checks happen per handler (see {@code dev.synapse.core.web}).
  */
 @Configuration
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SecurityConfig {
 
     @Bean

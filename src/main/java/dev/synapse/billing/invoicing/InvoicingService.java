@@ -294,7 +294,7 @@ public class InvoicingService {
         return String.format("%,d", value);
     }
 
-    static long asLong(Object value) {
+    public static long asLong(Object value) {
         return value instanceof Number n ? n.longValue() : 0L;
     }
 }
