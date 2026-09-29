@@ -18,12 +18,14 @@ that commit; re-copy when the reference's `contracts/CHANGELOG.md` gains an entr
 | 3 | subscriptions, entitlements, usage | **done** — plan catalog (`plans.yaml` → validated → synced at boot), default `free` subscription, trial/change/cancel/resume with the state machine and arrears proration, entitlement resolver + operator grants, counters/gauges/idempotency/atomic enforcement, `api_requests` metering of key auth, `users` seat gauge + invite cap. `test_subscriptions`, `test_usage_and_entitlements` and `test_api_keys` pass |
 | 4 | billing providers, invoicing, notifications, worker | **done** — five providers behind one capability table (manual, Stripe, Paddle, Xendit, PayMongo) with real HTTP clients and webhook verification, checkout/confirm/portal, framework-native invoicing (draft → finalize → pay/void, overage + proration lines, PDFs), spend/revenue reports, signed provider-webhook ingest with an idempotency ledger, the outbox dispatcher + signed outbound deliveries (Fernet-encrypted endpoint secrets), SMTP notifications, and the seven cron jobs in-process or standalone. `test_billing` passes |
 | 5 | webhooks, files, flags, audit, agents | **done** — webhook endpoint management + the delivery log + retry over the milestone-4 engine, org-scoped files on local disk or any S3-compatible bucket (direct multipart, presigned PUT/GET, the `storage_bytes` gauge both ways), feature flags with deterministic percentage rollouts and org/user overrides, the audit read route, and the agent registry behind the `agents` entitlement. **The entire `tests/conformance` suite passes** |
-| 6 | console parity (Playwright) | — |
+| 6 | console parity (Playwright) | **done** — the reference's Next.js console, unmodified, built against this server: all five journey files pass (**22 passed, 1 skipped** — `sso.spec.ts` self-skips until milestone 7). Dev seed (`--seed-dev`), the reference's MIME bytes on outbound mail, `make e2e` |
 | 7 | OIDC + OpenFGA, hardening | — |
 
 A milestone is done when the corresponding `tests/conformance` modules pass
 against this server. `make conformance` runs the **whole** suite — as of
-milestone 5 every module passes, with nothing deselected.
+milestone 5 every module passes, with nothing deselected. Milestone 6 adds a
+second gate: the reference's own console, unmodified, driven by its Playwright
+journeys (`make e2e` — see [Console parity](#console-parity)).
 
 ### Deliberately left for later milestones
 
@@ -67,6 +69,8 @@ make run-pg           # :8080 against the scratch DB with a bootstrapped operato
 make worker           # the standalone worker: cron jobs, no web server
 make jobs-run-once    # every job once, printing `name: count` (JOBS="dispatch_outbox purge_expired" for a subset)
 make conformance      # the reference's WHOLE suite (every module, no exclusions) → http://localhost:8080
+make seed-dev         # the demo org + one user per system role (the reference's `synapse-cli seed --dev`)
+make e2e              # the reference CONSOLE's Playwright journeys against this server (see "Console parity")
 ```
 
 Boot with the packaged jar:
@@ -243,7 +247,9 @@ Same names and defaults as the reference wherever the concept exists
   storage key validation + org scoping + the local backend, the S3 presigned
   URL shape (path style for a custom endpoint, virtual-host for AWS), webhook
   endpoint URL validation, and the event vocabulary checked against
-  `contracts/events.json`).
+  `contracts/events.json`; and the milestone-6 one: `MimeBuilderTest`, which
+  pins the outbound message bytes with the console spec's own attachment
+  regex).
 - `@SpringBootTest` journeys over a real Postgres: `ApiJourneyTest` (register →
   org → invite → accept → roles → API keys → operator suspension, and the
   problem-document contract), `BillingJourneyTest` (catalog → free plan →
@@ -283,12 +289,66 @@ Same names and defaults as the reference wherever the concept exists
   `SYNAPSE_TEST_S3_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY`) points at a running
   one, otherwise Testcontainers starts `quay.io/minio/minio`; with neither, its
   two tests skip and the local-disk journey still covers the rest.
+- `DevSeedJourneyTest` is the milestone-6 journey: every seeded demo user logs
+  in, carries its one role in `acme` and only the owner is a platform admin;
+  the org resolves the free plan and lists its five members with
+  `X-Total-Count`; a second seed is a no-op.
 
 ```bash
 docker run -d --name minio -p 9010:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio12345 \
   quay.io/minio/minio server /data
 SYNAPSE_TEST_S3_ENDPOINT=http://localhost:9010 SYNAPSE_TEST_JDBC_URL=jdbc:postgresql://[::1]:5434/synapse_java_test mvn test
 ```
+
+## Console parity
+
+The reference's console (`synapse-saas/apps/web`) and its Playwright journeys
+are the second acceptance suite: they are **never modified**, they are copied
+out of the reference repo and built with `NEXT_PUBLIC_API_URL` pointing here.
+
+```bash
+make e2e     # ⇒ 22 passed, 1 skipped
+```
+
+`scripts/e2e-console.sh` is the whole recipe: package the jar, start MailHog,
+drop/recreate the database, run the system + dev seeds, boot the server with
+the console's origin as `SYNAPSE_WEB_ORIGIN`, copy + `pnpm build` + `pnpm start`
+the console, run `playwright test`, tear everything down. Every port is an
+environment variable so two ports can run side by side on one machine —
+`CONSOLE_DIR`, `CONSOLE_PORT` (3300), `API_PORT` (8080), `JDBC_URL`,
+`MAILHOG_NAME`/`MAILHOG_SMTP` (1035)/`MAILHOG_HTTP` (8035), `RESET_DB`,
+`KEEP_STACK`, `SPECS` (e.g. `SPECS=auth.spec.ts make e2e`).
+
+What the console needs from the server, beyond the conformance contract:
+
+| The console does | The server must |
+|---|---|
+| `fetch(…, { credentials: "include" })` from `http://localhost:3300` | allow that exact origin **with credentials**, and expose `X-Request-Id`, `Retry-After`, `Content-Disposition`, `X-Total-Count` (`SYNAPSE_WEB_ORIGIN`, plus `SYNAPSE_WEB_ORIGINS` for extras) |
+| silent `POST /v1/auth/refresh` with an empty body on mount | accept the `synapse_rt` cookie when the body carries no token, and re-set it — `HttpOnly`, `SameSite=Lax`, `Path=/`, **not** `Secure` on plain-http localhost (`SYNAPSE_COOKIE_SECURE` derives from the origin's scheme) |
+| mirror the active org into `X-Org-Id` from its own `synapse_org` cookie | resolve the tenant from the header *and* from the `org` claim after `switch-org` |
+| poll MailHog for invite/invoice mail | dispatch the outbox every 5 s with the worker in-process, and send through SMTP with the invoice PDF attached |
+| parse the raw MIME of the invoice mail | write the part headers the reference's `EmailMessage` writes (see the note below) |
+
+Console-visible differences from the reference server: **none**. The one
+journey that failed on first run — `invoice-email.spec.ts:56`, which matches
+the attachment part with a regex — was a real divergence and is fixed:
+`MimeBuilder` now composes the message the way Python's `email.message
+.EmailMessage` does (flat `multipart/mixed`; `Content-Type: application/pdf`,
+`Content-Transfer-Encoding: base64`, `Content-Disposition: attachment;
+filename="…"`, `MIME-Version: 1.0`, in that order) instead of letting
+`MimeMessageHelper` pick its own shape.
+
+### Dev seed
+
+`--seed-dev` (`make seed-dev`) is the reference's `synapse-cli seed --dev`:
+`owner@acme.example.com` (a platform admin) owning **Acme Corporation** /
+`acme`, then `admin@`, `billing@`, `developer@` and `member@acme.example.com`,
+each invited with that role and auto-accepted. Password `password123`, display
+names `Acme <Role>` — the defaults the journeys' fixtures fall back to for
+`E2E_PLATFORM_ADMIN_EMAIL`/`_PASSWORD`. It is idempotent and refuses to run
+when `SYNAPSE_ENV=production`. The org is created through
+`OrganizationService`, so it carries the free subscription, the seat gauge and
+the `org.created`/`member.invited`/`member.joined` events a real org would.
 
 ## Layout
 

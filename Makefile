@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-pg run run-pg run-rls worker jobs-run-once plans-sync conformance conformance-all
+.PHONY: build test test-unit test-pg run run-pg run-rls worker jobs-run-once plans-sync seed-dev e2e conformance conformance-all
 REF ?= ../synapse-saas
 # The reference's scratch Postgres (docker compose --profile test) with this port's own database
 # IPv6 loopback: an ssh tunnel may own the IPv4 listener on 5434
@@ -40,6 +40,12 @@ jobs-run-once: ## Run every worker job once and exit, printing `name: count` (th
 
 plans-sync: ## Sync plans.yaml into the scratch database once and exit (the reference's `synapse-cli plans sync`)
 	SYNAPSE_JDBC_URL=$(PG_TEST_URL) java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --plans-sync --server.port=0
+
+seed-dev: ## The demo org + one user per system role (the reference's `synapse-cli seed --dev`); refused in production
+	SYNAPSE_JDBC_URL=$(PG_TEST_URL) java -jar target/synapse-saas-0.1.0-SNAPSHOT.jar --seed-dev
+
+e2e: ## The REFERENCE console's Playwright journeys against this port (copies apps/web, boots MailHog + a seeded server, tears down)
+	./scripts/e2e-console.sh
 
 conformance: ## The reference repo's whole black-box suite against this port on :8080 — every module, no exclusions
 	cd $(REF) && SYNAPSE_CONFORMANCE_API_URL=http://localhost:8080 \
