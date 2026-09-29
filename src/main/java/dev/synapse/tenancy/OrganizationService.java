@@ -187,6 +187,17 @@ public class OrganizationService {
      */
     @Transactional
     public MembershipRead inviteMember(UUID organizationId, String rawEmail, List<String> roleKeys) {
+        return inviteMember(organizationId, rawEmail, roleKeys,
+            entitlements.effectiveForOrg(organizationId).limitValue(UsageService.SEATS_METRIC));
+    }
+
+    /**
+     * The reference's {@code invite_member(..., seat_limit=None)}: a null limit is
+     * unenforced (unlimited plans, and the dev seed, which fills the demo org past
+     * the free plan's three seats on purpose).
+     */
+    @Transactional
+    public MembershipRead inviteMember(UUID organizationId, String rawEmail, List<String> roleKeys, Long seatLimit) {
         String email = Emails.normalize(rawEmail);
         Organization org = requireOrganization(organizationId);
         members.findByInvitedEmail(organizationId, email).ifPresent(existing -> {
@@ -194,7 +205,6 @@ public class OrganizationService {
             throw new ConflictError("This email is already invited to (or a member of) the organization",
                 Map.of("email", email, "membership_status", existing.status()));
         });
-        Long seatLimit = entitlements.effectiveForOrg(organizationId).limitValue(UsageService.SEATS_METRIC);
         long active = members.countByStatus(organizationId, "active");
         long pending = members.countByStatus(organizationId, "invited");
         if (seatLimit != null && active + pending + 1 > seatLimit) {
