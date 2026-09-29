@@ -19,6 +19,18 @@ public abstract class PostgresTestSupport {
     private static final String EXTERNAL_URL = System.getenv("SYNAPSE_TEST_JDBC_URL");
     private static PostgreSQLContainer<?> container;
 
+    /**
+     * The journeys register dozens of users from one address; the per-IP and
+     * per-identity auth limits would trip long before the assertions do. A
+     * subclass that tests the limiter registers its own (lower) values — the
+     * later registration for a key wins.
+     */
+    @DynamicPropertySource
+    static void authRateLimits(DynamicPropertyRegistry registry) {
+        registry.add("synapse.auth-rate-limit-per-ip", () -> 100_000);
+        registry.add("synapse.auth-rate-limit-per-identity", () -> 100_000);
+    }
+
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
         if (EXTERNAL_URL != null && !EXTERNAL_URL.isBlank()) {

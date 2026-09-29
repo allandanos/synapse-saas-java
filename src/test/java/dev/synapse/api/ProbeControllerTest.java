@@ -8,7 +8,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.synapse.core.cache.CacheBackend;
 import dev.synapse.core.config.SynapseProperties;
+import dev.synapse.core.metrics.FrameworkMetrics;
 import dev.synapse.core.problem.ApiExceptionHandler;
 import dev.synapse.core.problem.ProblemWriter;
 import dev.synapse.core.security.SecurityConfig;
@@ -16,6 +18,7 @@ import dev.synapse.core.web.FeatureChecks;
 import dev.synapse.core.web.FlagChecks;
 import dev.synapse.core.web.PermissionChecks;
 import dev.synapse.core.web.TenantAccess;
+import dev.synapse.identity.ratelimit.RateLimiter;
 import dev.synapse.tenancy.OrganizationController;
 import dev.synapse.tenancy.OrganizationService;
 import org.junit.jupiter.api.Test;
@@ -39,6 +42,10 @@ class ProbeControllerTest {
     @MockitoBean FeatureChecks features;
     @MockitoBean FlagChecks flags;
     @MockitoBean OrganizationService organizations;
+    // The milestone-7 seams the slice pulls in: the cache backend behind /readyz and the auth rate limiter's filter
+    @MockitoBean CacheBackend cache;
+    @MockitoBean RateLimiter rateLimiter;
+    @MockitoBean FrameworkMetrics metrics;
 
     @Test
     void healthzIsPublic() throws Exception {

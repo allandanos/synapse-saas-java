@@ -248,6 +248,8 @@ public class OrganizationService {
         }
         if (diff.containsKey("status")) {
             syncSeatGauge(membership.organizationId());
+            // suspended members keep no tuples; reactivated ones get them back
+            authz.invalidateUserPermissions(membership.userId(), membership.organizationId());
         }
         return MembershipRead.from(members.findView(membership.id()).orElseThrow());
     }
@@ -261,8 +263,11 @@ public class OrganizationService {
         }
         audit.log(Events.MEMBER_REMOVED, membership.organizationId(), null, "membership", membership.id(),
             Map.of("email", membership.invitedEmail() != null ? membership.invitedEmail() : String.valueOf(membership.userId())));
+        UUID removedUserId = membership.userId();
         members.delete(membership.id());
         syncSeatGauge(membership.organizationId());
+        // OpenFGA (when active): the removed member's tuples must go
+        authz.queueTupleSync(membership.organizationId(), removedUserId);
     }
 
     /** Accept an invitation with its emailed token (single-use); links the caller's user to the membership. */
@@ -294,6 +299,7 @@ public class OrganizationService {
     private Membership accept(Membership membership, User user) {
         members.accept(membership.id(), user == null ? null : user.id(), user == null ? null : user.email(), Instant.now());
         Membership accepted = members.findById(membership.id()).orElseThrow();
+        authz.invalidateUserPermissions(accepted.userId(), accepted.organizationId());
         audit.log(Events.MEMBER_JOINED, accepted.organizationId(), null, "membership", accepted.id(), Map.of("email", String.valueOf(accepted.invitedEmail())));
         outbox.append(Events.MEMBER_JOINED, "membership", accepted.id(), accepted.organizationId(), Map.of("email", String.valueOf(accepted.invitedEmail())));
         syncSeatGauge(accepted.organizationId());

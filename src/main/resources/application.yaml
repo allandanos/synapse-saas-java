@@ -98,6 +98,29 @@ synapse:
   worker-enabled: ${SYNAPSE_WORKER_ENABLED:true}
   audit-retention-days: ${SYNAPSE_AUDIT_RETENTION_DAYS:365}
   storage-presign-seconds: ${SYNAPSE_STORAGE_PRESIGN_SECONDS:3600}
+  # Redis: versioned caches, the auth rate limiter and the OIDC login state.
+  # Unset ⇒ per-process (single instance only); /readyz reports not_configured.
+  redis-url: ${SYNAPSE_REDIS_URL:}
+  # Auth rate limiting: attempts per fixed window, per client IP and per target identity
+  auth-rate-limit-per-ip: ${SYNAPSE_AUTH_RATE_LIMIT_PER_IP:20}
+  auth-rate-limit-per-identity: ${SYNAPSE_AUTH_RATE_LIMIT_PER_IDENTITY:5}
+  auth-rate-window-seconds: ${SYNAPSE_AUTH_RATE_WINDOW_SECONDS:60}
+  # CIDRs whose X-Forwarded-For may be believed; empty ⇒ the header is ignored outright
+  trusted-proxies: ${SYNAPSE_TRUSTED_PROXIES:}
+  # Authorization backend (ADR 0009): rbac reads the Postgres tables, openfga asks the store
+  authz-backend: ${SYNAPSE_AUTHZ_BACKEND:rbac}
+  openfga-url: ${SYNAPSE_OPENFGA_URL:}
+  openfga-store-id: ${SYNAPSE_OPENFGA_STORE_ID:}
+  openfga-model-id: ${SYNAPSE_OPENFGA_MODEL_ID:}
+  openfga-api-token: ${SYNAPSE_OPENFGA_API_TOKEN:}
+  openfga-fail-mode: ${SYNAPSE_OPENFGA_FAIL_MODE:closed}
+  # OIDC (ADR 0010): SYNAPSE_IDENTITY_PROVIDER=keycloak turns the SSO routes on
+  keycloak-base-url: ${SYNAPSE_KEYCLOAK_BASE_URL:}
+  keycloak-realm: ${SYNAPSE_KEYCLOAK_REALM:}
+  keycloak-client-id: ${SYNAPSE_KEYCLOAK_CLIENT_ID:}
+  keycloak-client-secret: ${SYNAPSE_KEYCLOAK_CLIENT_SECRET:}
+  keycloak-allow-password-grant: ${SYNAPSE_KEYCLOAK_ALLOW_PASSWORD_GRANT:false}
+  oidc-redirect-uri: ${SYNAPSE_OIDC_REDIRECT_URI:}
 
 logging:
   level:

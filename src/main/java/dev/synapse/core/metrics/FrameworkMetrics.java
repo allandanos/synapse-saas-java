@@ -52,6 +52,16 @@ public class FrameworkMetrics {
         increment("synapse_emails", "Notification emails by outcome", "outcome", outcome);
     }
 
+    /** An authentication event: login_succeeded | login_failed | register | refresh | rate_limited | limiter_degraded. */
+    public void authEvent(String event) {
+        increment("synapse_auth_events", "Authentication events", "event", event);
+    }
+
+    /** One OpenFGA permission check: allowed | denied | error. */
+    public void fgaCheck(String outcome) {
+        increment("synapse_fga_checks", "OpenFGA permission checks by outcome", "outcome", outcome);
+    }
+
     /** One worker job run: ok | error. */
     public void workerJob(String job, String outcome) {
         try {

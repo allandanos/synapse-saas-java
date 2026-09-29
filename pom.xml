@@ -96,6 +96,11 @@
       </exclusions>
     </dependency>
 
+    <!-- Redis for the versioned caches, the auth rate limiter and the OIDC login state -->
+    <dependency>
+      <groupId>io.lettuce</groupId>
+      <artifactId>lettuce-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-core</artifactId>

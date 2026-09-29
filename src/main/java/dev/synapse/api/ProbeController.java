@@ -1,5 +1,6 @@
 package dev.synapse.api;
 
+import dev.synapse.core.cache.CacheBackend;
 import dev.synapse.core.config.SynapseProperties;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,10 +18,12 @@ public class ProbeController {
 
     private final JdbcClient jdbc;
     private final SynapseProperties props;
+    private final CacheBackend cache;
 
-    public ProbeController(JdbcClient jdbc, SynapseProperties props) {
+    public ProbeController(JdbcClient jdbc, SynapseProperties props, CacheBackend cache) {
         this.jdbc = jdbc;
         this.props = props;
+        this.cache = cache;
     }
 
     @GetMapping("/healthz")
@@ -38,9 +41,16 @@ public class ProbeController {
         } catch (RuntimeException e) {
             checks.put("database", "error: " + e.getMessage());
         }
-        // The port has no Redis yet (caches and the rate limiter read Postgres directly);
-        // the reference reports exactly this when SYNAPSE_REDIS_URL is unset.
-        checks.put("redis", NOT_CONFIGURED);
+        if (!cache.redis()) {
+            checks.put("redis", NOT_CONFIGURED); // SYNAPSE_REDIS_URL unset: caches are per-process
+        } else {
+            try {
+                cache.ping();
+                checks.put("redis", "ok");
+            } catch (RuntimeException e) {
+                checks.put("redis", "error: " + e.getMessage());
+            }
+        }
         boolean ok = checks.values().stream().allMatch(value -> "ok".equals(value) || NOT_CONFIGURED.equals(value));
         Map<String, Object> body = Map.of("status", ok ? "ok" : "error", "checks", checks);
         return ResponseEntity.status(ok ? 200 : 503).body(body);

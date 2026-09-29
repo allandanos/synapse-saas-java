@@ -1,5 +1,6 @@
 package dev.synapse.worker.jobs;
 
+import dev.synapse.authorization.fga.TupleSync;
 import dev.synapse.core.metrics.FrameworkMetrics;
 import dev.synapse.core.outbox.Events;
 import dev.synapse.core.outbox.OutboxRepository;
@@ -51,16 +52,19 @@ public class OutboxDispatchJob implements Job {
     private final WebhookEndpointRepository endpoints;
     private final WebhookDeliveryRepository deliveries;
     private final NotificationHandlers notifications;
+    private final TupleSync tupleSync;
     private final FrameworkMetrics metrics;
     private final TransactionTemplate batch;
     private final TransactionTemplate savepoint;
 
     public OutboxDispatchJob(OutboxRepository outbox, WebhookEndpointRepository endpoints, WebhookDeliveryRepository deliveries,
-                             NotificationHandlers notifications, FrameworkMetrics metrics, PlatformTransactionManager transactions) {
+                             NotificationHandlers notifications, TupleSync tupleSync, FrameworkMetrics metrics,
+                             PlatformTransactionManager transactions) {
         this.outbox = outbox;
         this.endpoints = endpoints;
         this.deliveries = deliveries;
         this.notifications = notifications;
+        this.tupleSync = tupleSync;
         this.metrics = metrics;
         this.batch = new TransactionTemplate(transactions);
         this.savepoint = new TransactionTemplate(transactions);
@@ -77,15 +81,20 @@ public class OutboxDispatchJob implements Job {
         // The batch commits before the consumers run, so a failure below cannot resend.
         List<Dispatched> dispatched = batch.execute(status -> dispatchBatch());
         // In-process consumers run only once the events are durably published.
-        // Failures are logged; the OpenFGA tuple sync joins them in milestone 7.
+        // Failures are logged, never retried here: the outbox row is already published.
         for (Dispatched event : dispatched) {
-            try {
-                notifications.handleEvent(event.eventType(), event.payload());
-            } catch (RuntimeException e) {
-                log.warn("internal_consumer_failed consumer=notifications event_type={} error={}", event.eventType(), e.toString());
-            }
+            consume("notifications", event, () -> notifications.handleEvent(event.eventType(), event.payload()));
+            consume("fga_tuple_sync", event, () -> tupleSync.handleEvent(event.eventType(), event.payload()));
         }
         return dispatched.size();
+    }
+
+    private void consume(String consumer, Dispatched event, Runnable handler) {
+        try {
+            handler.run();
+        } catch (RuntimeException e) {
+            log.warn("internal_consumer_failed consumer={} event_type={} error={}", consumer, event.eventType(), e.toString());
+        }
     }
 
     private record Dispatched(String eventType, Map<String, Object> payload) {}

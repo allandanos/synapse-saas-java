@@ -103,6 +103,12 @@ public class MembershipRepository {
         return jdbc.sql("SELECT synapse_org_for_invite_token(:hash)").param("hash", tokenHash).query(UUID.class).optional();
     }
 
+    /** Every user id with a membership row in this org (any status) — cache invalidation and tuple sync. */
+    public List<UUID> userIdsIn(UUID organizationId) {
+        return jdbc.sql("SELECT user_id FROM memberships WHERE organization_id = :org AND user_id IS NOT NULL")
+            .param("org", organizationId).query(UUID.class).list();
+    }
+
     public long countByStatus(UUID organizationId, String status) {
         return jdbc.sql("SELECT count(*) FROM memberships WHERE organization_id = :org AND status = :status")
             .param("org", organizationId).param("status", status).query(Long.class).single();

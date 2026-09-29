@@ -1,5 +1,8 @@
 package dev.synapse.featureflags;
 
+import dev.synapse.core.cache.Caches;
+import dev.synapse.core.cache.DeferredBumps;
+import dev.synapse.core.cache.VersionedCache;
 import dev.synapse.core.errors.ConflictError;
 import dev.synapse.core.errors.FeatureFlagNotFoundError;
 import java.util.List;
@@ -17,22 +20,39 @@ import org.springframework.transaction.annotation.Transactional;
  * there is one, else the org id. Unknown flags are off — new code paths stay
  * dark by default.
  *
- * <p>The reference memoises resolution in a version-counter cache; this port
- * reads through to Postgres (same answers, one fewer moving part).
+ * <p>Resolution is memoised under the (global, org, user) scope versions, so
+ * any of the three invalidations — a flag edit, an org override, a user
+ * override — misses correctly (reference: {@code VersionedCache("fflags", ttl=30)}).
  */
 @Service
 public class FeatureFlagService {
 
-    private final FeatureFlagRepository flags;
+    /** The global scope: a flag edit invalidates every evaluation at once. */
+    public static final String GLOBAL_SCOPE = "all";
 
-    public FeatureFlagService(FeatureFlagRepository flags) {
+    private final FeatureFlagRepository flags;
+    private final VersionedCache cache;
+
+    public FeatureFlagService(FeatureFlagRepository flags, Caches caches) {
         this.flags = flags;
+        this.cache = caches.flags();
     }
 
     // ── Resolution ───────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
     public boolean isEnabled(String flagKey, UUID organizationId, UUID userId) {
+        String cacheKey = flagKey + "|" + organizationId + "|" + userId;
+        VersionedCache.Scoped cached = cache.getScoped(cacheKey, GLOBAL_SCOPE, "org:" + organizationId, "user:" + userId);
+        if (cached.body() != null) {
+            return "1".equals(cached.body());
+        }
+        boolean enabled = evaluate(flagKey, organizationId, userId);
+        cache.setScoped(cacheKey, enabled ? "1" : "0", cached.token());
+        return enabled;
+    }
+
+    private boolean evaluate(String flagKey, UUID organizationId, UUID userId) {
         FeatureFlag flag = flags.findByKey(flagKey).orElse(null);
         if (flag == null) {
             return false; // unknown flags are off
@@ -75,9 +95,11 @@ public class FeatureFlagService {
     @Transactional
     public FeatureFlag updateFlag(String key, Boolean enabled, Integer rolloutPercentage) {
         FeatureFlag flag = requireFlag(key);
-        return flags.updateFlag(key,
+        FeatureFlag updated = flags.updateFlag(key,
             enabled != null ? enabled : flag.enabled(),
             rolloutPercentage != null ? rolloutPercentage : flag.rolloutPercentage());
+        invalidate(GLOBAL_SCOPE);
+        return updated;
     }
 
     @Transactional(readOnly = true)
@@ -93,18 +115,34 @@ public class FeatureFlagService {
             throw new FeatureFlagNotFoundError("Override requires an organization_id or user_id");
         }
         FeatureFlagOverride existing = flags.findOverride(flagKey, organizationId, userId).orElse(null);
-        if (existing != null) {
-            return flags.updateOverride(existing.id(), enabled, note);
-        }
-        return flags.insertOverride(flagKey, organizationId, userId, enabled, note);
+        FeatureFlagOverride result = existing != null
+            ? flags.updateOverride(existing.id(), enabled, note)
+            : flags.insertOverride(flagKey, organizationId, userId, enabled, note);
+        bumpScope(organizationId, userId);
+        return result;
     }
 
     @Transactional
     public void deleteOverride(UUID overrideId) {
-        if (flags.findOverrideById(overrideId).isEmpty()) {
-            throw new FeatureFlagNotFoundError("Override not found");
-        }
+        FeatureFlagOverride override = flags.findOverrideById(overrideId)
+            .orElseThrow(() -> new FeatureFlagNotFoundError("Override not found"));
         flags.deleteOverride(overrideId);
+        bumpScope(override.organizationId(), override.userId());
+    }
+
+    private void bumpScope(UUID organizationId, UUID userId) {
+        if (organizationId != null) {
+            invalidate("org:" + organizationId);
+        }
+        if (userId != null) {
+            invalidate("user:" + userId);
+        }
+    }
+
+    /** Now (this request sees the change) and after commit (nobody caches pre-commit rows). */
+    private void invalidate(String scope) {
+        cache.bump(scope);
+        DeferredBumps.defer(cache, scope);
     }
 
     private FeatureFlag requireFlag(String key) {

@@ -50,8 +50,10 @@ public class PermissionGuard implements PermissionChecks {
             ctx.setUser(UserContext.ofUser(principal.id(), principal.email(), true, Set.of("*")));
             return;
         }
+        // The user context always carries the RBAC keys (audit, API-key bounding);
+        // the DECISION goes through userCan, which is RBAC or OpenFGA (ADR 0009).
         Set<String> keys = tx.execute(status -> authz.permissionKeysFor(principal.id(), tenant.organizationId()));
-        if (!keys.contains(permission)) {
+        if (!tx.execute(status -> authz.userCan(principal.id(), tenant.organizationId(), permission))) {
             throw new PermissionDeniedError("This action requires the '" + permission + "' permission", Map.of("permission", permission));
         }
         ctx.setUser(UserContext.ofUser(principal.id(), principal.email(), false, keys));

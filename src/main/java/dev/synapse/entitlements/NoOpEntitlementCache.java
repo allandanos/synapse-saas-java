@@ -3,10 +3,12 @@ package dev.synapse.entitlements;
 import dev.synapse.entitlements.EntitlementResolver.EffectiveEntitlements;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.stereotype.Component;
 
-/** Compute per request (no Redis yet). */
-@Component
+/**
+ * Compute per request. Not a bean: {@link VersionedEntitlementCache} is what
+ * the application wires; this stays as the "no cache at all" double for tests
+ * that assert a recomputation on every call.
+ */
 public class NoOpEntitlementCache implements EntitlementCache {
 
     @Override
