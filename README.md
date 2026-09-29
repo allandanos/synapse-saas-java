@@ -67,7 +67,9 @@ make worker           # the standalone worker: cron jobs, no web server
 make jobs-run-once    # every job once, printing `name: count` (JOBS="dispatch_outbox purge_expired" for a subset)
 make conformance      # the reference's WHOLE suite (every module, no exclusions) → http://localhost:8080
 make seed-dev         # the demo org + one user per system role (the reference's `synapse-cli seed --dev`)
+make redis            # this port's Redis on :6390 (the caches, the rate limiter and the OIDC state)
 make e2e              # the reference CONSOLE's Playwright journeys against this server (see "Console parity")
+make e2e-sso          # the same plus sso.spec.ts against a real Keycloak (23 passed, 0 skipped)
 ```
 
 Boot with the packaged jar:
@@ -435,7 +437,8 @@ the console, run `playwright test`, tear everything down. Every port is an
 environment variable so two ports can run side by side on one machine —
 `CONSOLE_DIR`, `CONSOLE_PORT` (3300), `API_PORT` (8080), `JDBC_URL`,
 `MAILHOG_NAME`/`MAILHOG_SMTP` (1035)/`MAILHOG_HTTP` (8035), `REDIS_URL`
-(6390), `KEYCLOAK_NAME`/`KEYCLOAK_PORT` (8180), `RESET_DB`, `KEEP_STACK`,
+/`REDIS_NAME`/`REDIS_PORT` (6390 — started if missing, never torn down: it is
+a cached container, unlike MailHog and Keycloak), `KEYCLOAK_NAME`/`KEYCLOAK_PORT` (8180), `RESET_DB`, `KEEP_STACK`,
 `SPECS` (e.g. `SPECS=auth.spec.ts make e2e`).
 
 `KEYCLOAK=1` adds one step: `scripts/keycloak-realm.py` copies the reference's

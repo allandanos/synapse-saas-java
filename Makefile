@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-pg run run-pg run-rls run-openfga worker jobs-run-once plans-sync plans-sync-stripe seed-dev \
+.PHONY: build test test-unit test-pg redis run run-pg run-rls run-openfga worker jobs-run-once plans-sync plans-sync-stripe seed-dev \
 	e2e e2e-sso authz-fga-write-model authz-fga-sync authz-fga-check conformance conformance-all
 REF ?= ../synapse-saas
 # The reference's scratch Postgres (docker compose --profile test) with this port's own database
@@ -26,6 +26,14 @@ test-unit: ## Pure-logic tests only (no database, no Docker)
 
 test-pg: ## @SpringBootTest journeys against an existing scratch database instead of Testcontainers
 	SYNAPSE_TEST_JDBC_URL=$(PG_TEST_URL) mvn -q -B test
+
+REDIS_NAME ?= redis-java
+REDIS_PORT ?= 6390
+
+redis: ## Start (or restart) this port's Redis on $(REDIS_PORT) — `make run-pg` and the e2e recipe expect it
+	@docker start $(REDIS_NAME) >/dev/null 2>&1 || \
+		docker run -d --name $(REDIS_NAME) -p $(REDIS_PORT):6379 redis:7-alpine >/dev/null
+	@echo "$(REDIS_NAME) listening on $(REDIS_PORT)"
 
 run: ## Boot against the reference dev stack's Postgres (:5433)
 	SYNAPSE_JDBC_URL=jdbc:postgresql://localhost:5433/synapse mvn -q -B spring-boot:run

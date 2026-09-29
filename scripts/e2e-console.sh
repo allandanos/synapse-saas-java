@@ -42,6 +42,8 @@ MAILHOG_NAME="${MAILHOG_NAME:-mailhog-java}"
 MAILHOG_SMTP="${MAILHOG_SMTP:-1035}"
 MAILHOG_HTTP="${MAILHOG_HTTP:-8035}"
 REDIS_URL="${REDIS_URL:-redis://localhost:6390/0}"
+REDIS_NAME="${REDIS_NAME:-redis-java}"
+REDIS_PORT="${REDIS_PORT:-6390}"
 KEYCLOAK="${KEYCLOAK:-0}"
 KEYCLOAK_NAME="${KEYCLOAK_NAME:-keycloak-java}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
@@ -103,6 +105,18 @@ step "MailHog ($MAILHOG_NAME: smtp $MAILHOG_SMTP, api $MAILHOG_HTTP)"
 docker rm -f "$MAILHOG_NAME" >/dev/null 2>&1 || true
 docker run -d --name "$MAILHOG_NAME" -p "$MAILHOG_SMTP:1025" -p "$MAILHOG_HTTP:8025" mailhog/mailhog:latest >/dev/null
 wait_for "http://localhost:$MAILHOG_HTTP/api/v2/messages" MailHog
+
+# Redis backs the versioned caches, the rate limiter and the OIDC login state.
+# It is a cached container, not a per-run one: started if missing, never torn down.
+if [ -n "$REDIS_URL" ]; then
+  step "Redis ($REDIS_NAME on :$REDIS_PORT)"
+  docker start "$REDIS_NAME" >/dev/null 2>&1 ||
+    docker run -d --name "$REDIS_NAME" -p "$REDIS_PORT:6379" redis:7-alpine >/dev/null
+  for _ in $(seq 1 30); do
+    docker exec "$REDIS_NAME" redis-cli ping >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
 
 if [ "$RESET_DB" = "1" ]; then
   step "database $PG_DATABASE (drop + create)"
