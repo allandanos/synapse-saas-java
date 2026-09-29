@@ -16,7 +16,7 @@ public class PermissionRepository {
     }
 
     public Set<String> existingKeys() {
-        return jdbc.sql("SELECT key FROM permissions").query(String.class).stream().collect(Collectors.toSet());
+        return jdbc.sql("SELECT key FROM permissions").query(String.class).list().stream().collect(Collectors.toSet());
     }
 
     public void insert(PermissionDef def) {

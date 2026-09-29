@@ -137,7 +137,7 @@ public class PlanRepository {
     // ── features registry ────────────────────────────────────────────────────────
 
     public Set<String> existingFeatureKeys() {
-        return jdbc.sql("SELECT key FROM features").query(String.class).stream().collect(Collectors.toSet());
+        return jdbc.sql("SELECT key FROM features").query(String.class).list().stream().collect(Collectors.toSet());
     }
 
     public void insertFeature(String key, String name, String category) {
@@ -159,13 +159,13 @@ public class PlanRepository {
         Map<UUID, List<PlanFeature>> features = jdbc.sql("SELECT plan_id, feature_key, enabled FROM plan_features WHERE plan_id = ANY(CAST(:ids AS uuid[])) ORDER BY feature_key")
             .param("ids", ids)
             .query((rs, i) -> Map.entry(Rows.uuid(rs, "plan_id"), new PlanFeature(rs.getString("feature_key"), rs.getBoolean("enabled"))))
-            .stream()
+            .list().stream()
             .collect(Collectors.groupingBy(Map.Entry::getKey, Collectors.mapping(Map.Entry::getValue, Collectors.toList())));
         Map<UUID, List<PlanLimit>> limits = jdbc.sql("SELECT plan_id, metric, limit_value, soft_limit_ratio, overage_unit, overage_price_cents FROM plan_limits WHERE plan_id = ANY(CAST(:ids AS uuid[])) ORDER BY metric")
             .param("ids", ids)
             .query((rs, i) -> Map.entry(Rows.uuid(rs, "plan_id"), new PlanLimit(rs.getString("metric"), Rows.longOrNull(rs, "limit_value"),
                 Rows.doubleOrNull(rs, "soft_limit_ratio"), Rows.intOrNull(rs, "overage_unit"), Rows.longOrNull(rs, "overage_price_cents"))))
-            .stream()
+            .list().stream()
             .collect(Collectors.groupingBy(Map.Entry::getKey, Collectors.mapping(Map.Entry::getValue, Collectors.toList())));
         List<Plan> plans = new ArrayList<>();
         for (PlanRow r : rows) {
